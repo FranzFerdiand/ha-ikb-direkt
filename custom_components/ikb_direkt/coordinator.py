@@ -82,11 +82,18 @@ except ImportError:
 
 from .api import IKBDirektClient, MeterPoint, Reading
 from .const import (
+    CONF_BASE_PRICE_YEAR,
+    CONF_ENERGY_PRICE,
     CONF_HISTORICAL_DAYS,
+    CONF_OFFPEAK_PRICE,
+    CONF_TARIFF_MODEL,
     DEFAULT_HISTORICAL_DAYS,
     DEFAULT_SCAN_INTERVAL,
     DOMAIN,
     RESOLUTION_15MIN,
+    TARIFF_MODEL_DUAL_SUMMER_NOON,
+    TARIFF_MODEL_FIXED,
+    TARIFF_MODEL_NONE,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -115,6 +122,9 @@ class IKBDirektCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.meter = meter
         self.config_entry = config_entry
         self.statistic_id = f"{DOMAIN}:{meter.counting_point.lower()}_{meter.reading_type.lower()}"
+        self.cost_statistic_id = (
+            f"{DOMAIN}:{meter.counting_point.lower()}_{meter.reading_type.lower()}_kosten"
+        )
 
     async def _async_update_data(self) -> dict[str, Any]:
         """Fetch latest readings and insert them into Home Assistant Long-Term Statistics."""
@@ -318,9 +328,178 @@ class IKBDirektCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 last_stat_sum_val,
             )
             async_add_external_statistics(self.hass, metadata, statistics)
-
         else:
             _LOGGER.debug("No new statistics points to insert for %s", self.statistic_id)
+
+        # Import monetary cost statistics if a tariff model is configured
+        tariff_model = self.config_entry.options.get(
+            CONF_TARIFF_MODEL,
+            self.config_entry.data.get(CONF_TARIFF_MODEL, TARIFF_MODEL_NONE),
+        )
+        if tariff_model and tariff_model != TARIFF_MODEL_NONE:
+            await self._async_import_cost_statistics(readings)
+
+    async def _async_import_cost_statistics(self, readings: list[Reading]) -> None:
+        """Calculate and insert monetary cost statistics."""
+        tariff_model = self.config_entry.options.get(
+            CONF_TARIFF_MODEL,
+            self.config_entry.data.get(CONF_TARIFF_MODEL, TARIFF_MODEL_NONE),
+        )
+        base_price_year = float(
+            self.config_entry.options.get(
+                CONF_BASE_PRICE_YEAR,
+                self.config_entry.data.get(CONF_BASE_PRICE_YEAR, 0.0),
+            )
+        )
+        energy_price = float(
+            self.config_entry.options.get(
+                CONF_ENERGY_PRICE,
+                self.config_entry.data.get(CONF_ENERGY_PRICE, 0.0),
+            )
+        )
+        offpeak_price = float(
+            self.config_entry.options.get(
+                CONF_OFFPEAK_PRICE,
+                self.config_entry.data.get(CONF_OFFPEAK_PRICE, 0.0),
+            )
+        )
+
+        last_cost_sum = 0.0
+        last_cost_start: datetime | None = None
+        try:
+            stats = await self.hass.async_add_executor_job(
+                get_last_statistics,
+                self.hass,
+                100,
+                self.cost_statistic_id,
+                True,
+                {"sum", "state"},
+            )
+            if self.cost_statistic_id in stats and stats[self.cost_statistic_id]:
+                stat_list = stats[self.cost_statistic_id]
+                sorted_stats = sorted(
+                    stat_list,
+                    key=lambda s: s.get("start")
+                    if isinstance(s.get("start"), (int, float, datetime))
+                    else 0,
+                    reverse=True,
+                )
+                chosen = sorted_stats[0]
+                last_cost_sum = float(chosen.get("sum", 0.0) or 0.0)
+                st_start = chosen.get("start")
+                if isinstance(st_start, (int, float)):
+                    last_cost_start = datetime.fromtimestamp(st_start, tz=timezone.utc)
+                elif isinstance(st_start, datetime):
+                    last_cost_start = (
+                        st_start
+                        if st_start.tzinfo
+                        else st_start.replace(tzinfo=timezone.utc)
+                    )
+        except Exception as err:
+            _LOGGER.warning("Could not query last cost statistics from recorder: %s", err)
+
+        cost_statistics = calculate_hourly_costs(
+            readings=readings,
+            tariff_model=tariff_model,
+            base_price_year=base_price_year,
+            energy_price=energy_price,
+            offpeak_price=offpeak_price,
+            last_cost_sum=last_cost_sum,
+            last_cost_start=last_cost_start,
+        )
+
+        if cost_statistics:
+            cost_metadata_kwargs: dict[str, Any] = {
+                "has_mean": False,
+                "has_sum": True,
+                "name": f"IKB {self.meter.meter_number} Kosten",
+                "source": DOMAIN,
+                "statistic_id": self.cost_statistic_id,
+                "unit_of_measurement": "EUR",
+                "unit_class": "monetary",
+            }
+            if StatisticMeanType is not None:
+                cost_metadata_kwargs["mean_type"] = StatisticMeanType.NONE
+
+            try:
+                cost_metadata = StatisticMetaData(**cost_metadata_kwargs)
+            except TypeError:
+                cost_metadata_kwargs.pop("unit_class", None)
+                cost_metadata_kwargs.pop("mean_type", None)
+                cost_metadata = StatisticMetaData(**cost_metadata_kwargs)
+
+            last_cost_val = (
+                cost_statistics[-1]["sum"]
+                if isinstance(cost_statistics[-1], dict)
+                else getattr(cost_statistics[-1], "sum", 0.0)
+            )
+            _LOGGER.info(
+                "Inserting %d cost statistics points for %s (new cumulative sum: %.3f EUR)",
+                len(cost_statistics),
+                self.cost_statistic_id,
+                last_cost_val,
+            )
+            async_add_external_statistics(self.hass, cost_metadata, cost_statistics)
+
+
+def calculate_hourly_costs(
+    readings: list[Reading],
+    tariff_model: str,
+    base_price_year: float,
+    energy_price: float,
+    offpeak_price: float,
+    last_cost_sum: float = 0.0,
+    last_cost_start: datetime | None = None,
+) -> list[StatisticData]:
+    """Calculate hourly monetary costs (EUR) from readings based on generic tariff model."""
+    positive_readings = [r for r in readings if r.kwh > 0.0]
+    if not positive_readings:
+        return []
+
+    max_valid_hour = positive_readings[-1].start_datetime.replace(
+        minute=0, second=0, microsecond=0
+    )
+
+    # Base price per hour = base_price_year / 8760 hours/year
+    base_price_hourly = (base_price_year / 8760.0) if base_price_year > 0 else 0.0
+
+    hourly_readings: dict[datetime, list[Reading]] = {}
+    for r in readings:
+        h_start = r.start_datetime.replace(minute=0, second=0, microsecond=0)
+        if h_start > max_valid_hour:
+            continue
+        hourly_readings.setdefault(h_start, []).append(r)
+
+    statistics: list[StatisticData] = []
+    running_sum = last_cost_sum
+
+    for h_start in sorted(hourly_readings.keys()):
+        if last_cost_start is not None and h_start <= last_cost_start:
+            continue
+
+        r_list = hourly_readings[h_start]
+        hour_cost = base_price_hourly
+
+        for r in r_list:
+            active_price = energy_price
+            if tariff_model == TARIFF_MODEL_DUAL_SUMMER_NOON:
+                # Local time check for Austria/Central Europe: April 1 to Sept 30, between 10:00 and 16:00
+                r_local = r.start_datetime.astimezone(dt_util.DEFAULT_TIME_ZONE)
+                if 4 <= r_local.month <= 9 and 10 <= r_local.hour < 16:
+                    active_price = offpeak_price if offpeak_price > 0 else energy_price
+
+            hour_cost += r.kwh * active_price
+
+        running_sum += hour_cost
+        statistics.append(
+            StatisticData(
+                start=h_start,
+                state=round(hour_cost, 4),
+                sum=round(running_sum, 4),
+            )
+        )
+
+    return statistics
 
 
 def aggregate_readings_to_hourly_statistics(

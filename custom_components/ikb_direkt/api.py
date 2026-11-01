@@ -161,28 +161,56 @@ class IKBDirektClient:
                     )
                 html = await resp.text()
 
+            # Check if session is already authenticated (e.g. from existing cookie jar)
+            if "page=logout" in html or "id=\"metCodes\"" in html or "page=loadprofile" in html:
+                _LOGGER.info("Already logged in to IKB Direkt via existing session")
+                soup = BeautifulSoup(html, "html.parser")
+                csrf_meta = soup.find("meta", {"name": "csrf-token"})
+                if csrf_meta and csrf_meta.get("content"):
+                    self._csrf_token = csrf_meta["content"]
+                self._is_logged_in = True
+                return True
+
             soup = BeautifulSoup(html, "html.parser")
             csrf_meta = soup.find("meta", {"name": "csrf-token"})
             if not csrf_meta or not csrf_meta.get("content"):
                 raise IKBDataError("CSRF token not found on IKB Direkt portal")
             self._csrf_token = csrf_meta["content"]
 
-            # 2. Trigger Keycloak login redirect via AJAX call
+            # 2. Trigger Keycloak login redirect via AJAX call with retry on temporary 500
             _LOGGER.debug("Requesting SSO redirect from portal")
             ajax_headers = {
                 "X-CSRF-Token": self._csrf_token,
                 "X-Requested-With": "XMLHttpRequest",
             }
-            async with session.post(
-                PORTAL_LOGIN_URL,
-                data={"form[send]": ""},
-                headers=ajax_headers,
-            ) as resp:
-                if resp.status != 200:
+            login_data: dict[str, Any] = {}
+            for attempt in range(3):
+                async with session.post(
+                    PORTAL_LOGIN_URL,
+                    data={"form[send]": ""},
+                    headers=ajax_headers,
+                ) as resp:
+                    if resp.status == 200:
+                        login_data = await resp.json(content_type=None)
+                        break
+                    if resp.status == 500 and attempt < 2:
+                        _LOGGER.debug(
+                            "Portal returned 500 on login initiate (attempt %d/3), retrying in 2s...",
+                            attempt + 1,
+                        )
+                        await asyncio.sleep(2)
+                        # Re-fetch landing page for fresh CSRF/session cookie
+                        async with session.get(PORTAL_BASE_URL) as fresh_resp:
+                            if fresh_resp.status == 200:
+                                fresh_soup = BeautifulSoup(await fresh_resp.text(), "html.parser")
+                                fresh_csrf = fresh_soup.find("meta", {"name": "csrf-token"})
+                                if fresh_csrf and fresh_csrf.get("content"):
+                                    self._csrf_token = fresh_csrf["content"]
+                                    ajax_headers["X-CSRF-Token"] = self._csrf_token
+                        continue
                     raise IKBConnectionError(
                         f"Login initiate failed (status {resp.status})"
                     )
-                login_data = await resp.json(content_type=None)
 
             redirect_url = login_data.get("redirect")
             if not redirect_url:

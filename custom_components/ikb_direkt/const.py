@@ -9,6 +9,16 @@ CONF_PASSWORD = "password"
 CONF_METER_ID = "meter_id"
 CONF_HISTORICAL_DAYS = "historical_days"
 
+# Tariff & Cost configuration keys
+CONF_TARIFF_MODEL = "tariff_model"
+CONF_BASE_PRICE_YEAR = "base_price_year"
+CONF_ENERGY_PRICE = "energy_price"
+CONF_OFFPEAK_PRICE = "offpeak_price"
+
+TARIFF_MODEL_NONE = "none"
+TARIFF_MODEL_FIXED = "fixed"
+TARIFF_MODEL_DUAL_SUMMER_NOON = "dual_summer_noon"
+
 # Defaults
 DEFAULT_SCAN_INTERVAL = 3600  # Fetch new data every hour (grid data typically arrives with some delay)
 DEFAULT_HISTORICAL_DAYS = 30  # Initial import of last 30 days of 15-min data

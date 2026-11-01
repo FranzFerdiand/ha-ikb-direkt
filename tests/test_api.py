@@ -246,3 +246,67 @@ def test_all_zeros_returns_empty_statistics() -> None:
     assert len(stats) == 0
 
 
+def test_calculate_hourly_costs_fixed() -> None:
+    """Test cost calculation with fixed tariff model."""
+    from custom_components.ikb_direkt.coordinator import calculate_hourly_costs
+    from datetime import datetime, timezone
+
+    base_ts = 1700000000
+    base_dt = datetime.fromtimestamp(base_ts, tz=timezone.utc).replace(
+        minute=0, second=0, microsecond=0
+    )
+    start_ts = int(base_dt.timestamp())
+
+    readings = [
+        Reading(start_timestamp=start_ts, end_timestamp=start_ts + 900, kwh=1.0),
+        Reading(start_timestamp=start_ts + 900, end_timestamp=start_ts + 1800, kwh=1.0),
+        Reading(start_timestamp=start_ts + 1800, end_timestamp=start_ts + 2700, kwh=1.0),
+        Reading(start_timestamp=start_ts + 2700, end_timestamp=start_ts + 3600, kwh=1.0),
+    ]
+
+    # 4 kWh * 0.12 EUR/kWh = 0.48 EUR, base price 0 EUR
+    costs = calculate_hourly_costs(
+        readings=readings,
+        tariff_model="fixed",
+        base_price_year=0.0,
+        energy_price=0.12,
+        offpeak_price=0.0,
+        last_cost_sum=5.0,
+    )
+
+    assert len(costs) == 1
+    c0_state = costs[0]["state"] if isinstance(costs[0], dict) else costs[0].state
+    c0_sum = costs[0]["sum"] if isinstance(costs[0], dict) else costs[0].sum
+    assert c0_state == 0.48
+    assert c0_sum == 5.48
+
+
+def test_calculate_hourly_costs_dual_summer_noon() -> None:
+    """Test cost calculation with dual summer noon offpeak tariff."""
+    from custom_components.ikb_direkt.coordinator import calculate_hourly_costs
+    from datetime import datetime, timezone
+
+    # 2026-06-15 11:00 UTC (June = month 6, summer period, 11:00 = noon interval)
+    dt_summer_noon = datetime(2026, 6, 15, 11, 0, tzinfo=timezone.utc)
+    ts = int(dt_summer_noon.timestamp())
+
+    readings = [
+        Reading(start_timestamp=ts, end_timestamp=ts + 3600, kwh=10.0),
+    ]
+
+    costs = calculate_hourly_costs(
+        readings=readings,
+        tariff_model="dual_summer_noon",
+        base_price_year=0.0,
+        energy_price=0.12,
+        offpeak_price=0.06,
+        last_cost_sum=0.0,
+    )
+
+    assert len(costs) == 1
+    c0_state = costs[0]["state"] if isinstance(costs[0], dict) else costs[0].state
+    # 10 kWh * 0.06 offpeak = 0.60 EUR
+    assert c0_state == 0.60
+
+
+

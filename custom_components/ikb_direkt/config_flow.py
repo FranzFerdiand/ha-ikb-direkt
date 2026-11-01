@@ -19,15 +19,28 @@ from .api import (
     MeterPoint,
 )
 from .const import (
+    CONF_BASE_PRICE_YEAR,
+    CONF_ENERGY_PRICE,
     CONF_HISTORICAL_DAYS,
     CONF_METER_ID,
+    CONF_OFFPEAK_PRICE,
     CONF_PASSWORD,
+    CONF_TARIFF_MODEL,
     CONF_USERNAME,
     DEFAULT_HISTORICAL_DAYS,
     DOMAIN,
+    TARIFF_MODEL_DUAL_SUMMER_NOON,
+    TARIFF_MODEL_FIXED,
+    TARIFF_MODEL_NONE,
 )
 
 _LOGGER = logging.getLogger(__name__)
+
+TARIFF_MODELS = [
+    TARIFF_MODEL_NONE,
+    TARIFF_MODEL_FIXED,
+    TARIFF_MODEL_DUAL_SUMMER_NOON,
+]
 
 
 class IKBDirektConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
@@ -174,12 +187,40 @@ class IKBDirektOptionsFlow(config_entries.OptionsFlow):
             CONF_HISTORICAL_DAYS,
             self.config_entry.data.get(CONF_HISTORICAL_DAYS, DEFAULT_HISTORICAL_DAYS),
         )
+        current_model = self.config_entry.options.get(
+            CONF_TARIFF_MODEL,
+            self.config_entry.data.get(CONF_TARIFF_MODEL, TARIFF_MODEL_NONE),
+        )
+        current_base = self.config_entry.options.get(
+            CONF_BASE_PRICE_YEAR,
+            self.config_entry.data.get(CONF_BASE_PRICE_YEAR, 0.0),
+        )
+        current_energy = self.config_entry.options.get(
+            CONF_ENERGY_PRICE,
+            self.config_entry.data.get(CONF_ENERGY_PRICE, 0.0),
+        )
+        current_offpeak = self.config_entry.options.get(
+            CONF_OFFPEAK_PRICE,
+            self.config_entry.data.get(CONF_OFFPEAK_PRICE, 0.0),
+        )
 
         schema = vol.Schema(
             {
                 vol.Optional(CONF_HISTORICAL_DAYS, default=current_days): vol.All(
                     vol.Coerce(int), vol.Range(min=1, max=365)
                 ),
+                vol.Optional(CONF_TARIFF_MODEL, default=current_model): vol.In(
+                    TARIFF_MODELS
+                ),
+                vol.Optional(CONF_BASE_PRICE_YEAR, default=float(current_base)): vol.Coerce(
+                    float
+                ),
+                vol.Optional(CONF_ENERGY_PRICE, default=float(current_energy)): vol.Coerce(
+                    float
+                ),
+                vol.Optional(
+                    CONF_OFFPEAK_PRICE, default=float(current_offpeak)
+                ): vol.Coerce(float),
             }
         )
 
