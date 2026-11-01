@@ -26,12 +26,12 @@ def test_meter_point_from_option() -> None:
         "PeriodBDate": "01.10.2026 00:15",
         "PeriodEDate": "31.10.2026 00:00",
     })
-    option_text = "REDACTED_IDENTIFIER - REDACTED_IDENTIFIER Verbrauch (IME, 01.10.2026 - 31.10.2026)"
+    option_text = "AT0051000000000000000000000000000 - 1KFM0000000000 Verbrauch (IME, 01.10.2026 - 31.10.2026)"
 
     meter = MeterPoint.from_option(option_val, option_text)
 
-    assert meter.counting_point == "REDACTED_IDENTIFIER"
-    assert meter.meter_number == "REDACTED_IDENTIFIER"
+    assert meter.counting_point == "AT0051000000000000000000000000000"
+    assert meter.meter_number == "1KFM0000000000"
     assert meter.reading_type == "Verbrauch"
     assert meter.period_start == "01.10.2026 00:15"
     assert meter.period_end == "31.10.2026 00:00"
