@@ -60,12 +60,13 @@ except ImportError:
         HAVE_RECORDER = False
         StatisticMeanType = None
         from dataclasses import dataclass
+        from typing import TypedDict
 
-        @dataclass
-        class StatisticData:  # type: ignore[no-redef]
+        class StatisticData(TypedDict, total=False):  # type: ignore[no-redef]
             start: datetime
             state: float
             sum: float
+
 
         @dataclass
         class StatisticMetaData:  # type: ignore[no-redef]
@@ -252,13 +253,19 @@ class IKBDirektCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         )
 
         if statistics:
+            last_stat_sum_val = (
+                statistics[-1]["sum"]
+                if isinstance(statistics[-1], dict)
+                else getattr(statistics[-1], "sum", 0.0)
+            )
             _LOGGER.info(
                 "Inserting %d hourly statistics points for %s (new cumulative sum: %.3f kWh)",
                 len(statistics),
                 self.statistic_id,
-                statistics[-1].sum,
+                last_stat_sum_val,
             )
             async_add_external_statistics(self.hass, metadata, statistics)
+
         else:
             _LOGGER.debug("No new statistics points to insert for %s", self.statistic_id)
 
