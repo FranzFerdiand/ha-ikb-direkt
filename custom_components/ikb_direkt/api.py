@@ -52,8 +52,8 @@ class IKBDataError(IKBDirektError):
 class MeterPoint:
     """Represents a Smart Meter point in the IKB portal."""
 
-    counting_point: str  # e.g. AT0051000602000000000000000042791
-    meter_number: str  # e.g. 1KFM0200317655
+    counting_point: str  # e.g. AT0051000000000000000000000000000
+    meter_number: str  # e.g. 1KFM0000000000
     reading_type: str  # "Verbrauch" (consumption) or "Einspeisung" (feed-in)
     period_start: str  # e.g. "30.09.2026 00:15"
     period_end: str  # e.g. "01.11.2026 00:00"
