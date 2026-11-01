@@ -17,12 +17,16 @@ except ImportError:
     async_get_clientsession = None  # type: ignore[assignment]
 
 
+from .api import IKBDirektClient, MeterPoint
+from .const import CONF_METER_ID, CONF_PASSWORD, CONF_USERNAME, DOMAIN
+
 if Platform is not None:
     PLATFORMS: list[Platform] = [Platform.SENSOR]
     from .coordinator import IKBDirektCoordinator
 else:
     PLATFORMS = []
     IKBDirektCoordinator = None  # type: ignore[assignment, misc]
+
 
 
 
