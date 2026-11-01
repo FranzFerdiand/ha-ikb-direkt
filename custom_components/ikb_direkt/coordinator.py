@@ -6,21 +6,77 @@ from datetime import date, datetime, timedelta, timezone
 import logging
 from typing import Any
 
-from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import UnitOfEnergy
-from homeassistant.core import HomeAssistant
-from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
-import homeassistant.util.dt as dt_util
+try:
+    from homeassistant.config_entries import ConfigEntry
+    from homeassistant.const import UnitOfEnergy
+    from homeassistant.core import HomeAssistant
+    from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
+    import homeassistant.util.dt as dt_util
+except ImportError:
+    ConfigEntry = Any  # type: ignore[assignment, misc]
+    HomeAssistant = Any  # type: ignore[assignment, misc]
+    class UnitOfEnergy:  # type: ignore[no-redef]
+        KILO_WATT_HOUR = "kWh"
+    class UpdateFailed(Exception):  # type: ignore[no-redef]
+        pass
+    class DataUpdateCoordinator:  # type: ignore[no-redef, type-arg]
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            pass
+        def __class_getitem__(cls, item: Any) -> Any:
+            return cls
+
+    class DtUtil:
+        DEFAULT_TIME_ZONE = timezone.utc
+        @staticmethod
+        def now() -> datetime:
+            return datetime.now(timezone.utc)
+    dt_util = DtUtil()  # type: ignore[assignment]
+
 
 try:
-    from homeassistant.components.recorder.models import StatisticData, StatisticMetaData
+    from homeassistant.components.recorder.models import (
+        StatisticData,
+        StatisticMetaData,
+        StatisticMeanType,
+    )
     from homeassistant.components.recorder.statistics import (
         async_add_external_statistics,
         get_last_statistics,
     )
     HAVE_RECORDER = True
 except ImportError:
-    HAVE_RECORDER = False
+    try:
+        from homeassistant.components.recorder.models import (
+            StatisticData,
+            StatisticMetaData,
+        )
+        from homeassistant.components.recorder.statistics import (
+            async_add_external_statistics,
+            get_last_statistics,
+        )
+        HAVE_RECORDER = True
+        StatisticMeanType = None
+    except ImportError:
+        HAVE_RECORDER = False
+        StatisticMeanType = None
+        from dataclasses import dataclass
+
+        @dataclass
+        class StatisticData:  # type: ignore[no-redef]
+            start: datetime
+            state: float
+            sum: float
+
+        @dataclass
+        class StatisticMetaData:  # type: ignore[no-redef]
+            has_mean: bool
+            has_sum: bool
+            name: str
+            source: str
+            statistic_id: str
+            unit_of_measurement: str
+            mean_type: Any = None
+
 
 from .api import IKBDirektClient, MeterPoint, Reading
 from .const import (
@@ -140,11 +196,18 @@ class IKBDirektCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             if r.start_datetime.astimezone(dt_util.DEFAULT_TIME_ZONE).date() == yesterday
         )
 
+        new_kwh = sum(
+            r.kwh
+            for r in readings
+            if last_stat_start is None or r.start_datetime > last_stat_start
+        )
+        total_sum = last_stat_sum + new_kwh
+
         return {
             "latest_reading_time": latest_reading.end_datetime.isoformat(),
             "latest_reading_kwh": round(latest_reading.kwh, 4),
             "yesterday_consumption_kwh": round(yesterday_kwh, 3),
-            "total_imported_kwh": round(last_stat_sum + sum(r.kwh for r in readings), 3),
+            "total_imported_kwh": round(total_sum, 3),
         }
 
     async def _async_import_statistics(
@@ -154,39 +217,83 @@ class IKBDirektCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         last_stat_start: datetime | None,
     ) -> None:
         """Process readings and push them to async_add_external_statistics."""
-        metadata = StatisticMetaData(
-            has_mean=False,
-            has_sum=True,
-            name=f"IKB {self.meter.meter_number} {self.meter.reading_type}",
-            source=DOMAIN,
-            statistic_id=self.statistic_id,
-            unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
-        )
-
-        statistics: list[StatisticData] = []
-        running_sum = last_stat_sum
-
-        for r in readings:
-            r_start = r.start_datetime
-            if last_stat_start is not None and r_start <= last_stat_start:
-                continue
-
-            running_sum += r.kwh
-            statistics.append(
-                StatisticData(
-                    start=r_start,
-                    state=r.kwh,
-                    sum=running_sum,
+        try:
+            if StatisticMeanType is not None:
+                metadata = StatisticMetaData(
+                    has_mean=False,
+                    mean_type=StatisticMeanType.NONE,
+                    has_sum=True,
+                    name=f"IKB {self.meter.meter_number} {self.meter.reading_type}",
+                    source=DOMAIN,
+                    statistic_id=self.statistic_id,
+                    unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
                 )
+            else:
+                metadata = StatisticMetaData(
+                    has_mean=False,
+                    has_sum=True,
+                    name=f"IKB {self.meter.meter_number} {self.meter.reading_type}",
+                    source=DOMAIN,
+                    statistic_id=self.statistic_id,
+                    unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
+                )
+        except TypeError:
+            metadata = StatisticMetaData(
+                has_mean=False,
+                has_sum=True,
+                name=f"IKB {self.meter.meter_number} {self.meter.reading_type}",
+                source=DOMAIN,
+                statistic_id=self.statistic_id,
+                unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
             )
+
+        statistics = aggregate_readings_to_hourly_statistics(
+            readings, last_stat_sum=last_stat_sum, last_stat_start=last_stat_start
+        )
 
         if statistics:
             _LOGGER.info(
-                "Inserting %d new statistics points for %s (new cumulative sum: %.3f kWh)",
+                "Inserting %d hourly statistics points for %s (new cumulative sum: %.3f kWh)",
                 len(statistics),
                 self.statistic_id,
-                running_sum,
+                statistics[-1].sum,
             )
             async_add_external_statistics(self.hass, metadata, statistics)
         else:
             _LOGGER.debug("No new statistics points to insert for %s", self.statistic_id)
+
+
+def aggregate_readings_to_hourly_statistics(
+    readings: list[Reading],
+    last_stat_sum: float = 0.0,
+    last_stat_start: datetime | None = None,
+) -> list[StatisticData]:
+    """Aggregate 15-minute readings into hourly StatisticData points for HA recorder.
+
+    Home Assistant requires all external statistics timestamps to be aligned to
+    the top of the hour (minute=0, second=0, microsecond=0).
+    """
+    hourly_buckets: dict[datetime, float] = {}
+    for r in readings:
+        h_start = r.start_datetime.replace(minute=0, second=0, microsecond=0)
+        hourly_buckets[h_start] = hourly_buckets.get(h_start, 0.0) + r.kwh
+
+    statistics: list[StatisticData] = []
+    running_sum = last_stat_sum
+
+    for h_start in sorted(hourly_buckets.keys()):
+        h_kwh = hourly_buckets[h_start]
+        if last_stat_start is not None and h_start <= last_stat_start:
+            continue
+
+        running_sum += h_kwh
+        statistics.append(
+            StatisticData(
+                start=h_start,
+                state=round(h_kwh, 4),
+                sum=round(running_sum, 4),
+            )
+        )
+
+    return statistics
+
