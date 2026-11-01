@@ -29,6 +29,7 @@ class IKBDirektSensorEntityDescription(SensorEntityDescription):
     """Describes IKB Direkt sensor entity."""
 
     value_fn: Callable[[dict[str, Any]], Any]
+    extra_attributes_fn: Callable[[dict[str, Any]], dict[str, Any] | None] | None = None
 
 
 SENSOR_DESCRIPTIONS: tuple[IKBDirektSensorEntityDescription, ...] = (
@@ -40,6 +41,16 @@ SENSOR_DESCRIPTIONS: tuple[IKBDirektSensorEntityDescription, ...] = (
         state_class=SensorStateClass.TOTAL,
         suggested_display_precision=3,
         value_fn=lambda data: data.get("yesterday_consumption_kwh"),
+        extra_attributes_fn=lambda data: {
+            k: v
+            for k, v in {
+                "target_date": data.get("yesterday_date"),
+                "data_delivered": data.get("yesterday_data_delivered"),
+                "last_reported_date": data.get("last_reported_date"),
+                "last_reported_kwh": data.get("last_reported_kwh"),
+            }.items()
+            if v is not None
+        },
     ),
     IKBDirektSensorEntityDescription(
         key="latest_reading",
@@ -50,6 +61,11 @@ SENSOR_DESCRIPTIONS: tuple[IKBDirektSensorEntityDescription, ...] = (
         state_class=SensorStateClass.MEASUREMENT,
         suggested_display_precision=4,
         value_fn=lambda data: data.get("latest_reading_kwh"),
+        extra_attributes_fn=lambda data: (
+            {"reading_timestamp": data["latest_reading_time"]}
+            if data.get("latest_reading_time")
+            else None
+        ),
     ),
     IKBDirektSensorEntityDescription(
         key="latest_reading_timestamp",
@@ -119,3 +135,10 @@ class IKBDirektSensor(CoordinatorEntity[IKBDirektCoordinator], SensorEntity):
         if not self.coordinator.data:
             return None
         return self.entity_description.value_fn(self.coordinator.data)
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any] | None:
+        """Return sensor extra state attributes."""
+        if not self.coordinator.data or not self.entity_description.extra_attributes_fn:
+            return None
+        return self.entity_description.extra_attributes_fn(self.coordinator.data)
