@@ -33,7 +33,11 @@
       "init": {
         "title": "IKB Direkt Settings",
         "data": {
-          "historical_days": "Initial history import (days)"
+          "historical_days": "Initial history import (days)",
+          "tariff_model": "Tariff Model (none, fixed, dual_summer_noon)",
+          "base_price_year": "Base price (EUR / year)",
+          "energy_price": "Working price (EUR / kWh)",
+          "offpeak_price": "Summer noon / off-peak price (EUR / kWh)"
         }
       }
     }
