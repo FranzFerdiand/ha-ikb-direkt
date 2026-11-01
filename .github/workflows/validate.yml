@@ -9,6 +9,8 @@ on:
 jobs:
   validate-hacs:
     name: HACS Validation
+    # HACS action can only validate public repositories; skip when repository is private
+    if: ${{ !github.event.repository.private }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -18,6 +20,7 @@ jobs:
         uses: "hacs/action@main"
         with:
           category: "integration"
+
 
   validate-hassfest:
     name: Hassfest

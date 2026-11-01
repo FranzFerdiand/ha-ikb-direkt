@@ -1,7 +1,8 @@
 # Home Assistant IKB Direkt Smart Meter Integration
 
-[![HACS Validation](https://github.com/fgehm/ha-ikb-direkt/actions/workflows/validate.yml/badge.svg)](https://github.com/fgehm/ha-ikb-direkt/actions/workflows/validate.yml)
+[![HACS Validation](https://github.com/FranzFerdiand/ha-ikb-direkt/actions/workflows/validate.yml/badge.svg)](https://github.com/FranzFerdiand/ha-ikb-direkt/actions/workflows/validate.yml)
 [![hacs_badge](https://img.shields.io/badge/HACS-Custom-orange.svg)](https://github.com/hacs/default)
+
 
 Home Assistant Integration und Python-CLI zum automatischen Abruf der Smart-Meter-Verbrauchsdaten (15-Minuten-Lastprofile) aus dem Kundenportal der **Innsbrucker Kommunalbetriebe AG (IKB)** ([direkt.ikb.at](https://direkt.ikb.at)).
 
@@ -32,7 +33,7 @@ Die Daten werden als offizielle **Home Assistant Long-Term Statistics** eingepfl
 2. Klicke oben rechts auf die drei Punkte `...` → **Benutzerdefinierte Repositories** (*Custom repositories*).
 3. Füge die Repository-URL ein:
    ```text
-   https://github.com/fgehm/ha-ikb-direkt
+   https://github.com/FranzFerdiand/ha-ikb-direkt
    ```
    Wähle als Kategorie: **Integration**.
 4. Klicke auf **Hinzufügen** und installiere die Integration **IKB Direkt Smart Meter**.
@@ -42,8 +43,9 @@ Die Daten werden als offizielle **Home Assistant Long-Term Statistics** eingepfl
 
 1. Lade das Repository als ZIP herunter oder clone es:
    ```bash
-   git clone https://github.com/fgehm/ha-ikb-direkt.git
+   git clone https://github.com/FranzFerdiand/ha-ikb-direkt.git
    ```
+
 2. Kopiere den Ordner `custom_components/ikb_direkt` in dein Home Assistant Konfigurationsverzeichnis unter:
    ```text
    config/custom_components/ikb_direkt
