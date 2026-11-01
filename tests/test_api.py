@@ -196,3 +196,53 @@ def test_aggregate_readings_to_hourly_statistics() -> None:
     assert s1_sum == 12.0  # 11.0 + 1.0
 
 
+def test_trailing_zeros_filtered_in_statistics() -> None:
+    """Test that trailing zero intervals from portal delay are filtered out."""
+    from custom_components.ikb_direkt.coordinator import aggregate_readings_to_hourly_statistics
+    from datetime import datetime, timezone
+
+    base_ts = 1700000000
+    base_dt = datetime.fromtimestamp(base_ts, tz=timezone.utc).replace(
+        minute=0, second=0, microsecond=0
+    )
+    start_ts = int(base_dt.timestamp())
+
+    readings = [
+        # Hour 0 (valid)
+        Reading(start_timestamp=start_ts, end_timestamp=start_ts + 900, kwh=0.25),
+        Reading(start_timestamp=start_ts + 900, end_timestamp=start_ts + 1800, kwh=0.25),
+        Reading(start_timestamp=start_ts + 1800, end_timestamp=start_ts + 2700, kwh=0.25),
+        Reading(start_timestamp=start_ts + 2700, end_timestamp=start_ts + 3600, kwh=0.25),
+        # Hour 1 (valid)
+        Reading(start_timestamp=start_ts + 3600, end_timestamp=start_ts + 4500, kwh=0.50),
+        Reading(start_timestamp=start_ts + 4500, end_timestamp=start_ts + 5400, kwh=0.50),
+        Reading(start_timestamp=start_ts + 5400, end_timestamp=start_ts + 6300, kwh=0.00),
+        Reading(start_timestamp=start_ts + 6300, end_timestamp=start_ts + 7200, kwh=0.00),
+        # Hour 2 (trailing unread dummy zeros from portal delay)
+        Reading(start_timestamp=start_ts + 7200, end_timestamp=start_ts + 8100, kwh=0.00),
+        Reading(start_timestamp=start_ts + 8100, end_timestamp=start_ts + 9000, kwh=0.00),
+        Reading(start_timestamp=start_ts + 9000, end_timestamp=start_ts + 9900, kwh=0.00),
+        Reading(start_timestamp=start_ts + 9900, end_timestamp=start_ts + 10800, kwh=0.00),
+    ]
+
+    stats = aggregate_readings_to_hourly_statistics(readings, last_stat_sum=10.0)
+
+    # Hour 2 must NOT be included in statistics
+    assert len(stats) == 2
+    s1_sum = stats[1]["sum"] if isinstance(stats[1], dict) else stats[1].sum
+    assert s1_sum == 12.0
+
+
+def test_all_zeros_returns_empty_statistics() -> None:
+    """Test that if all readings are zero, no statistics are generated."""
+    from custom_components.ikb_direkt.coordinator import aggregate_readings_to_hourly_statistics
+
+    readings = [
+        Reading(start_timestamp=1700000000, end_timestamp=1700000900, kwh=0.0),
+        Reading(start_timestamp=1700000900, end_timestamp=1700001800, kwh=0.0),
+    ]
+
+    stats = aggregate_readings_to_hourly_statistics(readings, last_stat_sum=10.0)
+    assert len(stats) == 0
+
+

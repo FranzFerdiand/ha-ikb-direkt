@@ -134,19 +134,38 @@ class IKBDirektCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 stats = await self.hass.async_add_executor_job(
                     get_last_statistics,
                     self.hass,
-                    1,
+                    100,
                     self.statistic_id,
                     True,
                     {"sum", "state"},
                 )
                 if self.statistic_id in stats and stats[self.statistic_id]:
-                    last_stat = stats[self.statistic_id][0]
-                    last_stat_sum = float(last_stat.get("sum", 0.0) or 0.0)
-                    start_val = last_stat.get("start")
-                    if isinstance(start_val, (int, float)):
-                        last_stat_start = datetime.fromtimestamp(start_val, tz=timezone.utc)
-                    elif isinstance(start_val, datetime):
-                        last_stat_start = start_val
+                    stat_list = stats[self.statistic_id]
+
+                    def _parse_start(s: Any) -> datetime:
+                        if isinstance(s, (int, float)):
+                            return datetime.fromtimestamp(s, tz=timezone.utc)
+                        if isinstance(s, datetime):
+                            return s if s.tzinfo else s.replace(tzinfo=timezone.utc)
+                        return datetime.min.replace(tzinfo=timezone.utc)
+
+                    sorted_stats = sorted(
+                        stat_list,
+                        key=lambda s: _parse_start(s.get("start")),
+                        reverse=True,
+                    )
+                    # Find latest stat with positive consumption to skip trailing dummy zero hours
+                    chosen_stat = sorted_stats[0]
+                    for st in sorted_stats:
+                        st_state = st.get("state")
+                        if st_state is not None and float(st_state) > 0.0:
+                            chosen_stat = st
+                            break
+
+                    last_stat_sum = float(chosen_stat.get("sum", 0.0) or 0.0)
+                    parsed_start = _parse_start(chosen_stat.get("start"))
+                    if parsed_start != datetime.min.replace(tzinfo=timezone.utc):
+                        last_stat_start = parsed_start
             except Exception as err:
                 _LOGGER.warning("Could not query last statistics from recorder: %s", err)
 
@@ -182,6 +201,10 @@ class IKBDirektCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 "latest_reading_time": None,
                 "latest_reading_kwh": None,
                 "yesterday_consumption_kwh": None,
+                "yesterday_date": (today - timedelta(days=1)).isoformat(),
+                "yesterday_data_delivered": False,
+                "last_reported_date": None,
+                "last_reported_kwh": None,
                 "total_imported_kwh": last_stat_sum,
             }
 
@@ -189,26 +212,66 @@ class IKBDirektCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if HAVE_RECORDER:
             await self._async_import_statistics(readings, last_stat_sum, last_stat_start)
 
-        # Compute summary values for sensor entities
-        latest_reading = readings[-1]
+        # Determine last positive reading (kwh > 0.0) to ignore trailing placeholder zeros
+        positive_readings = [r for r in readings if r.kwh > 0.0]
+        if positive_readings:
+            latest_reading = positive_readings[-1]
+            max_valid_hour: datetime | None = latest_reading.start_datetime.replace(
+                minute=0, second=0, microsecond=0
+            )
+        else:
+            latest_reading = readings[-1]
+            max_valid_hour = None
+
+        # Yesterday evaluation (using Home Assistant local timezone)
         yesterday = today - timedelta(days=1)
-        yesterday_kwh = sum(
-            r.kwh
+        yesterday_readings = [
+            r
             for r in readings
             if r.start_datetime.astimezone(dt_util.DEFAULT_TIME_ZONE).date() == yesterday
+        ]
+        yesterday_has_data = any(r.kwh > 0.0 for r in yesterday_readings)
+        yesterday_kwh = (
+            round(sum(r.kwh for r in yesterday_readings), 3)
+            if yesterday_has_data
+            else None
         )
+
+        # Find most recent date prior to today with verified positive data
+        daily_kwh: dict[date, float] = {}
+        daily_has_pos: dict[date, bool] = {}
+        for r in readings:
+            r_date = r.start_datetime.astimezone(dt_util.DEFAULT_TIME_ZONE).date()
+            if r_date >= today:
+                continue
+            daily_kwh[r_date] = daily_kwh.get(r_date, 0.0) + r.kwh
+            if r.kwh > 0.0:
+                daily_has_pos[r_date] = True
+
+        last_reported_date: date | None = None
+        last_reported_kwh: float | None = None
+        for d in sorted(daily_kwh.keys(), reverse=True):
+            if daily_has_pos.get(d, False):
+                last_reported_date = d
+                last_reported_kwh = round(daily_kwh[d], 3)
+                break
 
         new_kwh = sum(
             r.kwh
             for r in readings
-            if last_stat_start is None or r.start_datetime > last_stat_start
+            if (last_stat_start is None or r.start_datetime > last_stat_start)
+            and (max_valid_hour is None or r.start_datetime <= max_valid_hour)
         )
         total_sum = last_stat_sum + new_kwh
 
         return {
             "latest_reading_time": latest_reading.end_datetime.isoformat(),
-            "latest_reading_kwh": round(latest_reading.kwh, 4),
-            "yesterday_consumption_kwh": round(yesterday_kwh, 3),
+            "latest_reading_kwh": round(latest_reading.kwh, 4) if latest_reading else None,
+            "yesterday_consumption_kwh": yesterday_kwh,
+            "yesterday_date": yesterday.isoformat(),
+            "yesterday_data_delivered": yesterday_has_data,
+            "last_reported_date": last_reported_date.isoformat() if last_reported_date else None,
+            "last_reported_kwh": last_reported_kwh,
             "total_imported_kwh": round(total_sum, 3),
         }
 
@@ -269,10 +332,23 @@ def aggregate_readings_to_hourly_statistics(
 
     Home Assistant requires all external statistics timestamps to be aligned to
     the top of the hour (minute=0, second=0, microsecond=0).
+
+    Trailing zero-placeholder intervals resulting from IKB portal delivery delays
+    are discarded so they do not pollute long-term statistics with unverified 0.0 values.
     """
+    positive_readings = [r for r in readings if r.kwh > 0.0]
+    if not positive_readings:
+        return []
+
+    max_valid_hour = positive_readings[-1].start_datetime.replace(
+        minute=0, second=0, microsecond=0
+    )
+
     hourly_buckets: dict[datetime, float] = {}
     for r in readings:
         h_start = r.start_datetime.replace(minute=0, second=0, microsecond=0)
+        if h_start > max_valid_hour:
+            continue
         hourly_buckets[h_start] = hourly_buckets.get(h_start, 0.0) + r.kwh
 
     statistics: list[StatisticData] = []
