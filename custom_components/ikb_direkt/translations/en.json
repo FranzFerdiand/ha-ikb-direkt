@@ -1,0 +1,57 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "IKB Direkt Smart Meter",
+        "description": "Log in with your IKB Direkt portal credentials (direkt.ikb.at).",
+        "data": {
+          "username": "E-Mail / Username",
+          "password": "Password",
+          "historical_days": "Initial history import (days)"
+        }
+      },
+      "meter": {
+        "title": "Select Smart Meter",
+        "description": "Choose which Smart Meter to monitor.",
+        "data": {
+          "meter_id": "Smart Meter"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Failed to connect to IKB portal.",
+      "invalid_auth": "Invalid username or password.",
+      "no_meters": "No smart meters found in this account.",
+      "unknown": "An unexpected error occurred."
+    },
+    "abort": {
+      "already_configured": "This smart meter is already configured."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "IKB Direkt Settings",
+        "data": {
+          "historical_days": "Initial history import (days)"
+        }
+      }
+    }
+  },
+  "entity": {
+    "sensor": {
+      "yesterday_consumption": {
+        "name": "Yesterday Consumption"
+      },
+      "latest_reading": {
+        "name": "Latest 15min Reading"
+      },
+      "latest_reading_timestamp": {
+        "name": "Latest Reading Time"
+      },
+      "total_imported_energy": {
+        "name": "Total Imported Energy"
+      }
+    }
+  }
+}

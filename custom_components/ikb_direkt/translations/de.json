@@ -1,0 +1,57 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "IKB Direkt Smart Meter",
+        "description": "Melden Sie sich mit Ihren Zugangsdaten für das IKB-Kundenportal (direkt.ikb.at) an.",
+        "data": {
+          "username": "E-Mail / Benutzername",
+          "password": "Passwort",
+          "historical_days": "Historischer Erstimport (Tage)"
+        }
+      },
+      "meter": {
+        "title": "Smart Meter auswählen",
+        "description": "Wählen Sie den Zählpunkt aus, der eingebunden werden soll.",
+        "data": {
+          "meter_id": "Zählpunkt / Zähler"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Verbindung zum IKB-Portal fehlgeschlagen.",
+      "invalid_auth": "Ungültiger Benutzername oder falsches Passwort.",
+      "no_meters": "Keine Smart Meter / Zählpunkte im Kundenkonto gefunden.",
+      "unknown": "Unerwarteter Fehler aufgetreten."
+    },
+    "abort": {
+      "already_configured": "Dieser Zählpunkt ist bereits in Home Assistant konfiguriert."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "IKB Direkt Einstellungen",
+        "data": {
+          "historical_days": "Historischer Erstimport (Tage)"
+        }
+      }
+    }
+  },
+  "entity": {
+    "sensor": {
+      "yesterday_consumption": {
+        "name": "Verbrauch Gestern"
+      },
+      "latest_reading": {
+        "name": "Letzter 15-Min-Wert"
+      },
+      "latest_reading_timestamp": {
+        "name": "Zeitpunkt letzter Messwert"
+      },
+      "total_imported_energy": {
+        "name": "Gesamter importierter Zählerstand"
+      }
+    }
+  }
+}
