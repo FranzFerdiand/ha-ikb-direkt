@@ -76,6 +76,7 @@ except ImportError:
             source: str
             statistic_id: str
             unit_of_measurement: str
+            unit_class: str | None = None
             mean_type: Any = None
 
 
@@ -218,35 +219,24 @@ class IKBDirektCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         last_stat_start: datetime | None,
     ) -> None:
         """Process readings and push them to async_add_external_statistics."""
+        metadata_kwargs: dict[str, Any] = {
+            "has_mean": False,
+            "has_sum": True,
+            "name": f"IKB {self.meter.meter_number} {self.meter.reading_type}",
+            "source": DOMAIN,
+            "statistic_id": self.statistic_id,
+            "unit_of_measurement": UnitOfEnergy.KILO_WATT_HOUR,
+            "unit_class": "energy",
+        }
+        if StatisticMeanType is not None:
+            metadata_kwargs["mean_type"] = StatisticMeanType.NONE
+
         try:
-            if StatisticMeanType is not None:
-                metadata = StatisticMetaData(
-                    has_mean=False,
-                    mean_type=StatisticMeanType.NONE,
-                    has_sum=True,
-                    name=f"IKB {self.meter.meter_number} {self.meter.reading_type}",
-                    source=DOMAIN,
-                    statistic_id=self.statistic_id,
-                    unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
-                )
-            else:
-                metadata = StatisticMetaData(
-                    has_mean=False,
-                    has_sum=True,
-                    name=f"IKB {self.meter.meter_number} {self.meter.reading_type}",
-                    source=DOMAIN,
-                    statistic_id=self.statistic_id,
-                    unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
-                )
+            metadata = StatisticMetaData(**metadata_kwargs)
         except TypeError:
-            metadata = StatisticMetaData(
-                has_mean=False,
-                has_sum=True,
-                name=f"IKB {self.meter.meter_number} {self.meter.reading_type}",
-                source=DOMAIN,
-                statistic_id=self.statistic_id,
-                unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
-            )
+            metadata_kwargs.pop("unit_class", None)
+            metadata_kwargs.pop("mean_type", None)
+            metadata = StatisticMetaData(**metadata_kwargs)
 
         statistics = aggregate_readings_to_hourly_statistics(
             readings, last_stat_sum=last_stat_sum, last_stat_start=last_stat_start

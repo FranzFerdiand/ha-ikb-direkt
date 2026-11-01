@@ -44,7 +44,8 @@ SENSOR_DESCRIPTIONS: tuple[IKBDirektSensorEntityDescription, ...] = (
     IKBDirektSensorEntityDescription(
         key="latest_reading",
         translation_key="latest_reading",
-        device_class=SensorDeviceClass.ENERGY,
+        device_class=None,
+        icon="mdi:lightning-bolt",
         native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
         state_class=SensorStateClass.MEASUREMENT,
         suggested_display_precision=4,
