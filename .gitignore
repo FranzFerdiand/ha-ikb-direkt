@@ -33,5 +33,6 @@ htmlcov/
 scratch/
 test_*.py
 !tests/
-!tests/**
+!tests/*.py
 loadprofile_*.html
+

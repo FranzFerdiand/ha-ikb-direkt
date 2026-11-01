@@ -148,3 +148,44 @@ async def test_get_meters_parsing() -> None:
     assert meters[0].counting_point == "AT0051000"
     assert meters[0].meter_number == "1KFM999"
     assert meters[0].reading_type == "Verbrauch"
+
+
+def test_aggregate_readings_to_hourly_statistics() -> None:
+    """Test aggregating 15-minute readings into hourly buckets for HA recorder."""
+    from custom_components.ikb_direkt.coordinator import aggregate_readings_to_hourly_statistics
+    from datetime import datetime, timezone
+
+    # 4 readings in the 10:00 - 11:00 hour, 2 in 11:00 - 12:00
+    base_ts = 1700000000  # arbitrary timestamp
+    # Align to a known hour
+    base_dt = datetime.fromtimestamp(base_ts, tz=timezone.utc).replace(
+        minute=0, second=0, microsecond=0
+    )
+    start_ts = int(base_dt.timestamp())
+
+    readings = [
+        # Hour 0
+        Reading(start_timestamp=start_ts, end_timestamp=start_ts + 900, kwh=0.25),
+        Reading(start_timestamp=start_ts + 900, end_timestamp=start_ts + 1800, kwh=0.25),
+        Reading(start_timestamp=start_ts + 1800, end_timestamp=start_ts + 2700, kwh=0.25),
+        Reading(start_timestamp=start_ts + 2700, end_timestamp=start_ts + 3600, kwh=0.25),
+        # Hour 1
+        Reading(start_timestamp=start_ts + 3600, end_timestamp=start_ts + 4500, kwh=0.50),
+        Reading(start_timestamp=start_ts + 4500, end_timestamp=start_ts + 5400, kwh=0.50),
+    ]
+
+    stats = aggregate_readings_to_hourly_statistics(readings, last_stat_sum=10.0)
+
+    assert len(stats) == 2
+    # Verify top-of-the-hour alignment
+    assert stats[0].start.minute == 0
+    assert stats[0].start.second == 0
+    assert stats[0].start.microsecond == 0
+    assert stats[0].state == 1.0  # 4 * 0.25
+    assert stats[0].sum == 11.0  # 10.0 + 1.0
+
+    assert stats[1].start.minute == 0
+    assert stats[1].start.second == 0
+    assert stats[1].state == 1.0  # 2 * 0.50
+    assert stats[1].sum == 12.0  # 11.0 + 1.0
+
