@@ -316,6 +316,7 @@ class IKBDirektCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 last_stat_start=last_stat_start,
                 last_cost_sum=effective_cost_sum,
                 last_cost_start=effective_cost_start,
+                is_backfill=needs_cost_backfill,
             )
 
         # Determine last positive reading (kwh > 0.0) to ignore trailing placeholder zeros
@@ -388,6 +389,7 @@ class IKBDirektCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         last_stat_start: datetime | None,
         last_cost_sum: float = 0.0,
         last_cost_start: datetime | None = None,
+        is_backfill: bool = False,
     ) -> None:
         """Process readings and push them to async_add_external_statistics."""
         metadata_kwargs: dict[str, Any] = {
@@ -439,6 +441,7 @@ class IKBDirektCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 readings=readings,
                 last_cost_sum=last_cost_sum,
                 last_cost_start=last_cost_start,
+                is_backfill=is_backfill,
             )
 
     async def _async_import_cost_statistics(
@@ -446,6 +449,7 @@ class IKBDirektCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         readings: list[Reading],
         last_cost_sum: float = 0.0,
         last_cost_start: datetime | None = None,
+        is_backfill: bool = False,
     ) -> None:
         """Calculate and insert monetary cost statistics."""
         tariff_model = self.config_entry.options.get(
@@ -471,7 +475,7 @@ class IKBDirektCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             )
         )
 
-        if last_cost_start is None:
+        if not is_backfill and last_cost_start is None:
             try:
                 stats = await self.hass.async_add_executor_job(
                     get_last_statistics,
