@@ -99,6 +99,15 @@ from .const import (
 _LOGGER = logging.getLogger(__name__)
 
 
+def _parse_statistic_start(s: Any) -> datetime:
+    """Parse start timestamp or datetime from recorder statistic."""
+    if isinstance(s, (int, float)):
+        return datetime.fromtimestamp(s, tz=timezone.utc)
+    if isinstance(s, datetime):
+        return s if s.tzinfo else s.replace(tzinfo=timezone.utc)
+    return datetime.min.replace(tzinfo=timezone.utc)
+
+
 class IKBDirektCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     """Coordinator to manage polling of IKB Direkt Smart Meter readings."""
 
@@ -134,37 +143,39 @@ class IKBDirektCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             CONF_HISTORICAL_DAYS,
             self.config_entry.data.get(CONF_HISTORICAL_DAYS, DEFAULT_HISTORICAL_DAYS),
         )
+        tariff_model = self.config_entry.options.get(
+            CONF_TARIFF_MODEL,
+            self.config_entry.data.get(CONF_TARIFF_MODEL, TARIFF_MODEL_NONE),
+        )
 
         last_stat: dict[str, Any] | None = None
         last_stat_sum = 0.0
         last_stat_start: datetime | None = None
+        oldest_stat_start: datetime | None = None
+
+        last_cost_sum = 0.0
+        last_cost_start: datetime | None = None
+        oldest_cost_start: datetime | None = None
+        needs_cost_backfill = False
 
         if HAVE_RECORDER:
+            # Query consumption statistics
             try:
                 stats = await self.hass.async_add_executor_job(
                     get_last_statistics,
                     self.hass,
-                    100,
+                    1000,
                     self.statistic_id,
                     True,
                     {"sum", "state"},
                 )
                 if self.statistic_id in stats and stats[self.statistic_id]:
                     stat_list = stats[self.statistic_id]
-
-                    def _parse_start(s: Any) -> datetime:
-                        if isinstance(s, (int, float)):
-                            return datetime.fromtimestamp(s, tz=timezone.utc)
-                        if isinstance(s, datetime):
-                            return s if s.tzinfo else s.replace(tzinfo=timezone.utc)
-                        return datetime.min.replace(tzinfo=timezone.utc)
-
                     sorted_stats = sorted(
                         stat_list,
-                        key=lambda s: _parse_start(s.get("start")),
+                        key=lambda s: _parse_statistic_start(s.get("start")),
                         reverse=True,
                     )
-                    # Find latest stat with positive consumption to skip trailing dummy zero hours
                     chosen_stat = sorted_stats[0]
                     for st in sorted_stats:
                         st_state = st.get("state")
@@ -173,18 +184,91 @@ class IKBDirektCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                             break
 
                     last_stat_sum = float(chosen_stat.get("sum", 0.0) or 0.0)
-                    parsed_start = _parse_start(chosen_stat.get("start"))
+                    parsed_start = _parse_statistic_start(chosen_stat.get("start"))
                     if parsed_start != datetime.min.replace(tzinfo=timezone.utc):
                         last_stat_start = parsed_start
+
+                    parsed_oldest = _parse_statistic_start(sorted_stats[-1].get("start"))
+                    if parsed_oldest != datetime.min.replace(tzinfo=timezone.utc):
+                        oldest_stat_start = parsed_oldest
             except Exception as err:
                 _LOGGER.warning("Could not query last statistics from recorder: %s", err)
 
+            # Query cost statistics if tariff model is configured
+            if tariff_model and tariff_model != TARIFF_MODEL_NONE:
+                try:
+                    cost_stats = await self.hass.async_add_executor_job(
+                        get_last_statistics,
+                        self.hass,
+                        1000,
+                        self.cost_statistic_id,
+                        True,
+                        {"sum", "state"},
+                    )
+                    if self.cost_statistic_id in cost_stats and cost_stats[self.cost_statistic_id]:
+                        cost_stat_list = cost_stats[self.cost_statistic_id]
+                        sorted_cost_stats = sorted(
+                            cost_stat_list,
+                            key=lambda s: _parse_statistic_start(s.get("start")),
+                            reverse=True,
+                        )
+                        c_chosen = sorted_cost_stats[0]
+                        last_cost_sum = float(c_chosen.get("sum", 0.0) or 0.0)
+                        p_c_start = _parse_statistic_start(c_chosen.get("start"))
+                        if p_c_start != datetime.min.replace(tzinfo=timezone.utc):
+                            last_cost_start = p_c_start
+
+                        p_oldest_c = _parse_statistic_start(sorted_cost_stats[-1].get("start"))
+                        if p_oldest_c != datetime.min.replace(tzinfo=timezone.utc):
+                            oldest_cost_start = p_oldest_c
+                except Exception as err:
+                    _LOGGER.warning("Could not query last cost statistics from recorder: %s", err)
+
+                earliest_target = datetime.combine(
+                    today - timedelta(days=historical_days),
+                    datetime.min.time(),
+                    tzinfo=timezone.utc,
+                )
+                if last_cost_start is None:
+                    needs_cost_backfill = True
+                    _LOGGER.info(
+                        "No cost statistics found for %s. Triggering initial cost backfill for %d days",
+                        self.cost_statistic_id,
+                        historical_days,
+                    )
+                elif (
+                    oldest_stat_start is not None
+                    and oldest_cost_start is not None
+                    and oldest_cost_start > oldest_stat_start + timedelta(days=2)
+                ):
+                    needs_cost_backfill = True
+                    _LOGGER.info(
+                        "Incomplete cost statistics detected for %s (starts %s vs consumption starts %s). Triggering full cost backfill",
+                        self.cost_statistic_id,
+                        oldest_cost_start.isoformat(),
+                        oldest_stat_start.isoformat(),
+                    )
+                elif (
+                    oldest_cost_start is not None
+                    and oldest_cost_start > earliest_target + timedelta(days=2)
+                    and historical_days >= 7
+                ):
+                    needs_cost_backfill = True
+                    _LOGGER.info(
+                        "Cost statistics for %s do not cover historical window (starts %s, target %s). Triggering full cost backfill",
+                        self.cost_statistic_id,
+                        oldest_cost_start.isoformat(),
+                        earliest_target.isoformat(),
+                    )
+
         # Determine start date for fetching
-        if last_stat_start is not None:
+        if last_stat_start is not None and not needs_cost_backfill:
             # Re-fetch from 2 days prior to last known reading to handle delayed grid corrections
             fetch_start_date = (last_stat_start - timedelta(days=2)).date()
         else:
             fetch_start_date = today - timedelta(days=historical_days)
+            if oldest_stat_start is not None and oldest_stat_start.date() < fetch_start_date:
+                fetch_start_date = oldest_stat_start.date()
 
         fetch_end_date = today
 
@@ -220,7 +304,19 @@ class IKBDirektCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         # Import into Long-Term Statistics
         if HAVE_RECORDER:
-            await self._async_import_statistics(readings, last_stat_sum, last_stat_start)
+            # If cost backfill is needed and existing cost stats were incomplete/absent,
+            # we reset last_cost_start and last_cost_sum so calculate_hourly_costs recalculates
+            # the full period from the beginning.
+            effective_cost_sum = 0.0 if needs_cost_backfill else last_cost_sum
+            effective_cost_start = None if needs_cost_backfill else last_cost_start
+
+            await self._async_import_statistics(
+                readings=readings,
+                last_stat_sum=last_stat_sum,
+                last_stat_start=last_stat_start,
+                last_cost_sum=effective_cost_sum,
+                last_cost_start=effective_cost_start,
+            )
 
         # Determine last positive reading (kwh > 0.0) to ignore trailing placeholder zeros
         positive_readings = [r for r in readings if r.kwh > 0.0]
@@ -290,6 +386,8 @@ class IKBDirektCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         readings: list[Reading],
         last_stat_sum: float,
         last_stat_start: datetime | None,
+        last_cost_sum: float = 0.0,
+        last_cost_start: datetime | None = None,
     ) -> None:
         """Process readings and push them to async_add_external_statistics."""
         metadata_kwargs: dict[str, Any] = {
@@ -337,9 +435,18 @@ class IKBDirektCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self.config_entry.data.get(CONF_TARIFF_MODEL, TARIFF_MODEL_NONE),
         )
         if tariff_model and tariff_model != TARIFF_MODEL_NONE:
-            await self._async_import_cost_statistics(readings)
+            await self._async_import_cost_statistics(
+                readings=readings,
+                last_cost_sum=last_cost_sum,
+                last_cost_start=last_cost_start,
+            )
 
-    async def _async_import_cost_statistics(self, readings: list[Reading]) -> None:
+    async def _async_import_cost_statistics(
+        self,
+        readings: list[Reading],
+        last_cost_sum: float = 0.0,
+        last_cost_start: datetime | None = None,
+    ) -> None:
         """Calculate and insert monetary cost statistics."""
         tariff_model = self.config_entry.options.get(
             CONF_TARIFF_MODEL,
@@ -364,39 +471,30 @@ class IKBDirektCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             )
         )
 
-        last_cost_sum = 0.0
-        last_cost_start: datetime | None = None
-        try:
-            stats = await self.hass.async_add_executor_job(
-                get_last_statistics,
-                self.hass,
-                100,
-                self.cost_statistic_id,
-                True,
-                {"sum", "state"},
-            )
-            if self.cost_statistic_id in stats and stats[self.cost_statistic_id]:
-                stat_list = stats[self.cost_statistic_id]
-                sorted_stats = sorted(
-                    stat_list,
-                    key=lambda s: s.get("start")
-                    if isinstance(s.get("start"), (int, float, datetime))
-                    else 0,
-                    reverse=True,
+        if last_cost_start is None:
+            try:
+                stats = await self.hass.async_add_executor_job(
+                    get_last_statistics,
+                    self.hass,
+                    1000,
+                    self.cost_statistic_id,
+                    True,
+                    {"sum", "state"},
                 )
-                chosen = sorted_stats[0]
-                last_cost_sum = float(chosen.get("sum", 0.0) or 0.0)
-                st_start = chosen.get("start")
-                if isinstance(st_start, (int, float)):
-                    last_cost_start = datetime.fromtimestamp(st_start, tz=timezone.utc)
-                elif isinstance(st_start, datetime):
-                    last_cost_start = (
-                        st_start
-                        if st_start.tzinfo
-                        else st_start.replace(tzinfo=timezone.utc)
+                if self.cost_statistic_id in stats and stats[self.cost_statistic_id]:
+                    stat_list = stats[self.cost_statistic_id]
+                    sorted_stats = sorted(
+                        stat_list,
+                        key=lambda s: _parse_statistic_start(s.get("start")),
+                        reverse=True,
                     )
-        except Exception as err:
-            _LOGGER.warning("Could not query last cost statistics from recorder: %s", err)
+                    chosen = sorted_stats[0]
+                    last_cost_sum = float(chosen.get("sum", 0.0) or 0.0)
+                    p_start = _parse_statistic_start(chosen.get("start"))
+                    if p_start != datetime.min.replace(tzinfo=timezone.utc):
+                        last_cost_start = p_start
+            except Exception as err:
+                _LOGGER.warning("Could not query last cost statistics from recorder: %s", err)
 
         cost_statistics = calculate_hourly_costs(
             readings=readings,

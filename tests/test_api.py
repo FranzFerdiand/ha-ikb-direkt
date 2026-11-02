@@ -309,4 +309,56 @@ def test_calculate_hourly_costs_dual_summer_noon() -> None:
     assert c0_state == 0.60
 
 
+def test_parse_statistic_start_helper() -> None:
+    """Test helper parsing various statistic start formats."""
+    from custom_components.ikb_direkt.coordinator import _parse_statistic_start
+    from datetime import datetime, timezone
+
+    # int / float timestamp
+    dt = _parse_statistic_start(1700000000)
+    assert dt.tzinfo is not None
+    assert int(dt.timestamp()) == 1700000000
+
+    # naive datetime gets UTC
+    dt_naive = datetime(2026, 10, 1, 12, 0)
+    dt_res = _parse_statistic_start(dt_naive)
+    assert dt_res.tzinfo == timezone.utc
+
+    # aware datetime preserved
+    dt_aware = datetime(2026, 10, 1, 12, 0, tzinfo=timezone.utc)
+    assert _parse_statistic_start(dt_aware) == dt_aware
+
+
+def test_calculate_hourly_costs_with_base_price() -> None:
+    """Test that annual base price is correctly distributed across hours."""
+    from custom_components.ikb_direkt.coordinator import calculate_hourly_costs
+    from datetime import datetime, timezone
+
+    base_ts = 1700000000
+    base_dt = datetime.fromtimestamp(base_ts, tz=timezone.utc).replace(
+        minute=0, second=0, microsecond=0
+    )
+    start_ts = int(base_dt.timestamp())
+
+    readings = [
+        Reading(start_timestamp=start_ts, end_timestamp=start_ts + 3600, kwh=0.5),
+    ]
+
+    # base_price_year = 87.60 EUR -> 0.01 EUR/hour base + 0.5 kWh * 0.20 EUR = 0.10 EUR -> 0.11 EUR total
+    costs = calculate_hourly_costs(
+        readings=readings,
+        tariff_model="fixed",
+        base_price_year=87.60,
+        energy_price=0.20,
+        offpeak_price=0.0,
+        last_cost_sum=0.0,
+    )
+
+    assert len(costs) == 1
+    c0_state = costs[0]["state"] if isinstance(costs[0], dict) else costs[0].state
+    c0_sum = costs[0]["sum"] if isinstance(costs[0], dict) else costs[0].sum
+    assert c0_state == 0.11
+    assert c0_sum == 0.11
+
+
 
