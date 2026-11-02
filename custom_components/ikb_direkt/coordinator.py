@@ -416,7 +416,6 @@ class IKBDirektCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 "source": DOMAIN,
                 "statistic_id": self.cost_statistic_id,
                 "unit_of_measurement": "EUR",
-                "unit_class": "monetary",
             }
             if StatisticMeanType is not None:
                 cost_metadata_kwargs["mean_type"] = StatisticMeanType.NONE
@@ -424,7 +423,6 @@ class IKBDirektCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             try:
                 cost_metadata = StatisticMetaData(**cost_metadata_kwargs)
             except TypeError:
-                cost_metadata_kwargs.pop("unit_class", None)
                 cost_metadata_kwargs.pop("mean_type", None)
                 cost_metadata = StatisticMetaData(**cost_metadata_kwargs)
 
