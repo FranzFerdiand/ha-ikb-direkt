@@ -21,7 +21,7 @@ TARIFF_MODEL_DUAL_SUMMER_NOON = "dual_summer_noon"
 
 # Defaults
 DEFAULT_SCAN_INTERVAL = 3600  # Fetch new data every hour (grid data typically arrives with some delay)
-DEFAULT_HISTORICAL_DAYS = 30  # Initial import of last 30 days of 15-min data
+DEFAULT_HISTORICAL_DAYS = 35  # Initial import of last 35 days of 15-min data (covers contract from ~30.09)
 
 # Portal URLs
 PORTAL_BASE_URL = "https://direkt.ikb.at"
