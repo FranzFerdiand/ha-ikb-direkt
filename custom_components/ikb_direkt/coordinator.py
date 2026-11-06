@@ -279,9 +279,27 @@ class IKBDirektCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self.meter.counting_point,
         )
 
+        meters_to_fetch = [self.meter]
+        try:
+            discovered = await self.client.get_meters()
+            matching = [
+                m
+                for m in discovered
+                if m.counting_point == self.meter.counting_point
+                and m.reading_type == self.meter.reading_type
+            ]
+            if matching:
+                meters_to_fetch = matching
+                self.meter = matching[-1]
+        except Exception as err:
+            _LOGGER.debug(
+                "Could not refresh meter definitions from portal, using configured meter: %s",
+                err,
+            )
+
         try:
             readings = await self.client.get_load_profile(
-                meter=self.meter,
+                meter=meters_to_fetch,
                 start_date=fetch_start_date,
                 end_date=fetch_end_date,
                 resolution=RESOLUTION_15MIN,

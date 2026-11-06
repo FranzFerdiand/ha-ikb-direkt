@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 import json
@@ -318,12 +319,12 @@ class IKBDirektClient:
 
     async def get_load_profile(
         self,
-        meter: MeterPoint,
+        meter: MeterPoint | Sequence[MeterPoint],
         start_date: date | datetime | str,
         end_date: date | datetime | str,
         resolution: str = RESOLUTION_15MIN,
     ) -> list[Reading]:
-        """Fetch readings for the given meter and date range."""
+        """Fetch readings for the given meter(s) and date range."""
         if not self._is_logged_in:
             await self.login()
 
@@ -338,14 +339,39 @@ class IKBDirektClient:
         s_str = _format_date(start_date)
         e_str = _format_date(end_date)
 
+        meters: list[MeterPoint] = [meter] if isinstance(meter, MeterPoint) else list(meter)
+
         session = await self._get_session()
+
+        # Build periods parameter, expanding PeriodEDate / PeriodBDate so portal backend
+        # does not truncate queries across monthly period boundaries.
+        period_objs: list[dict[str, Any]] = []
+        for m in meters:
+            if not m.raw_json:
+                continue
+            try:
+                p_dict = json.loads(m.raw_json)
+                if isinstance(p_dict, dict):
+                    # Ensure PeriodEDate extends at least through requested end_date
+                    p_dict["PeriodEDate"] = f"{e_str} 23:45"
+                    if s_str:
+                        p_dict["PeriodBDate"] = f"{s_str} 00:00"
+                    period_objs.append(p_dict)
+            except Exception:
+                continue
+
+        if not period_objs:
+            periods_param = f"[{','.join(m.raw_json for m in meters if m.raw_json)}]"
+        else:
+            periods_param = json.dumps(period_objs)
+
         params = {
             "ajaxService": "getLoadProfile",
             "ajax": "y",
             "startDate": s_str,
             "endDate": e_str,
             "resolution": resolution,
-            "periods": f"[{meter.raw_json}]",
+            "periods": periods_param,
         }
         url = f"{PORTAL_DATA_SERVICE_URL}?{urllib.parse.urlencode(params)}"
         headers = {
@@ -353,7 +379,13 @@ class IKBDirektClient:
             "X-CSRF-Token": self._csrf_token or "",
         }
 
-        _LOGGER.debug("Requesting load profile: %s to %s (resolution: %s)", s_str, e_str, resolution)
+        _LOGGER.debug(
+            "Requesting load profile: %s to %s (resolution: %s, periods: %s)",
+            s_str,
+            e_str,
+            resolution,
+            periods_param,
+        )
         try:
             async with session.get(url, headers=headers) as resp:
                 if resp.status != 200:
@@ -366,28 +398,34 @@ class IKBDirektClient:
                 _LOGGER.debug("Empty load profile response from portal")
                 return []
 
-            series = raw_json[0]
-            raw_data = series.get("data", [])
             readings: list[Reading] = []
+            seen_timestamps: set[int] = set()
 
-            for item in raw_data:
-                # item format: [end_ts, kwh, start_ts, end_ts]
-                if isinstance(item, list) and len(item) >= 3:
-                    end_ts = int(item[0])
-                    val = float(item[1]) if item[1] is not None else 0.0
-                    start_ts = int(item[2])
-                    readings.append(
-                        Reading(
-                            start_timestamp=start_ts,
-                            end_timestamp=end_ts,
-                            kwh=val,
-                        )
-                    )
+            for series in raw_json:
+                if not isinstance(series, dict):
+                    continue
+                raw_data = series.get("data", [])
+                for item in raw_data:
+                    # item format: [end_ts, kwh, start_ts, end_ts]
+                    if isinstance(item, list) and len(item) >= 3:
+                        end_ts = int(item[0])
+                        val = float(item[1]) if item[1] is not None else 0.0
+                        start_ts = int(item[2])
+                        if start_ts not in seen_timestamps:
+                            seen_timestamps.add(start_ts)
+                            readings.append(
+                                Reading(
+                                    start_timestamp=start_ts,
+                                    end_timestamp=end_ts,
+                                    kwh=val,
+                                )
+                            )
 
             # Sort by start_timestamp
             readings.sort(key=lambda r: r.start_timestamp)
+            cp = meters[0].counting_point if meters else "unknown"
             _LOGGER.info(
-                "Retrieved %d reading(s) for meter %s", len(readings), meter.counting_point
+                "Retrieved %d reading(s) for meter %s", len(readings), cp
             )
             return readings
 
