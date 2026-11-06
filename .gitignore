@@ -27,7 +27,7 @@ dist/
 .coverage
 htmlcov/
 
-# Local credentials & logs
+# Local credentials, debug scripts & logs
 .env
 *.log
 scratch/
@@ -36,3 +36,10 @@ test_*.py
 !tests/*.py
 loadprofile_*.html
 
+# Debug & scratch scripts
+debug_*.py
+debug*.py
+check_*.py
+scratch_*.py
+*.tmp
+*.bak
