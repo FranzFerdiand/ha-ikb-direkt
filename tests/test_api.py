@@ -361,4 +361,93 @@ def test_calculate_hourly_costs_with_base_price() -> None:
     assert c0_sum == 0.11
 
 
+@pytest.mark.asyncio
+async def test_get_load_profile_multi_period_and_multi_series() -> None:
+    """Test get_load_profile with multiple period options and multi-series response."""
+    import urllib.parse
+
+    opt_oct = json.dumps({
+        "LType": "MLI",
+        "MecId": "100",
+        "DevId": "200",
+        "ObiId": "61",
+        "PeriodBDate": "01.10.2026 00:15",
+        "PeriodEDate": "31.10.2026 00:00",
+    })
+    opt_nov = json.dumps({
+        "LType": "MLI",
+        "MecId": "100",
+        "DevId": "200",
+        "ObiId": "61",
+        "PeriodBDate": "01.11.2026 00:15",
+        "PeriodEDate": "30.11.2026 00:00",
+    })
+
+    meter_oct = MeterPoint.from_option(opt_oct, "AT0051000 - 1KFM000 Verbrauch (IME, 01.10.2026 - 31.10.2026)")
+    meter_nov = MeterPoint.from_option(opt_nov, "AT0051000 - 1KFM000 Verbrauch (IME, 01.11.2026 - 30.11.2026)")
+
+    client = IKBDirektClient("user@example.com", "secret")
+    client._is_logged_in = True
+    client._csrf_token = "mock-csrf"
+
+    # Multi-series response from portal (October series + November series)
+    fake_response = [
+        {
+            "Period": "October",
+            "data": [
+                [1792880100, 0.05, 1792879200, 1792880100],
+            ],
+        },
+        {
+            "Period": "November",
+            "data": [
+                [1793570400, 0.10, 1793569500, 1793570400],
+            ],
+        },
+    ]
+
+    mock_resp = AsyncMock()
+    mock_resp.status = 200
+    mock_resp.json = AsyncMock(return_value=fake_response)
+
+    captured_url = []
+
+    def mock_get(url, **kwargs):
+        captured_url.append(url)
+        cm = AsyncMock()
+        cm.__aenter__.return_value = mock_resp
+        cm.__aexit__.return_value = None
+        return cm
+
+    mock_session = MagicMock()
+    mock_session.closed = False
+    mock_session.get.side_effect = mock_get
+    client._session = mock_session
+
+    readings = await client.get_load_profile(
+        [meter_oct, meter_nov],
+        start_date="30.10.2026",
+        end_date="06.11.2026",
+        resolution=RESOLUTION_15MIN,
+    )
+
+    # Both series parsed
+    assert len(readings) == 2
+    assert readings[0].start_timestamp == 1792879200
+    assert readings[0].kwh == 0.05
+    assert readings[1].start_timestamp == 1793569500
+    assert readings[1].kwh == 0.10
+
+    # Verify periods parameter in URL was expanded
+    query = urllib.parse.parse_qs(urllib.parse.urlparse(captured_url[0]).query)
+    assert query["startDate"] == ["30.10.2026"]
+    assert query["endDate"] == ["06.11.2026"]
+    periods = json.loads(query["periods"][0])
+    assert len(periods) == 2
+    assert periods[0]["PeriodEDate"] == "06.11.2026 23:45"
+    assert periods[0]["PeriodBDate"] == "30.10.2026 00:00"
+    assert periods[1]["PeriodEDate"] == "06.11.2026 23:45"
+
+
+
 
