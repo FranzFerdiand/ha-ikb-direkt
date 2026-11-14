@@ -8,13 +8,11 @@ try:
     from homeassistant.config_entries import ConfigEntry
     from homeassistant.const import Platform
     from homeassistant.core import HomeAssistant
-    from homeassistant.helpers.aiohttp_client import async_get_clientsession
 except ImportError:
     # Enables importing api and const outside a full Home Assistant environment
     ConfigEntry = None  # type: ignore[assignment, misc]
     Platform = None  # type: ignore[assignment, misc]
     HomeAssistant = None  # type: ignore[assignment, misc]
-    async_get_clientsession = None  # type: ignore[assignment]
 
 
 from .api import IKBDirektClient, MeterPoint
@@ -52,8 +50,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         display_name=display_name,
     )
 
-    session = async_get_clientsession(hass)
-    client = IKBDirektClient(username=username, password=password, session=session)
+    client = IKBDirektClient(username=username, password=password)
 
     coordinator = IKBDirektCoordinator(
         hass=hass,
@@ -62,13 +59,22 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         config_entry=entry,
     )
 
-    await coordinator.async_config_entry_first_refresh()
+    try:
+        await coordinator.async_config_entry_first_refresh()
+    except BaseException:
+        await client.close()
+        raise
 
     hass.data[DOMAIN][entry.entry_id] = coordinator
 
     entry.async_on_unload(entry.add_update_listener(async_reload_entry))
 
-    await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+    try:
+        await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+    except BaseException:
+        hass.data[DOMAIN].pop(entry.entry_id, None)
+        await client.close()
+        raise
     return True
 
 
