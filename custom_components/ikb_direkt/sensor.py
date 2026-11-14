@@ -38,7 +38,7 @@ SENSOR_DESCRIPTIONS: tuple[IKBDirektSensorEntityDescription, ...] = (
         translation_key="yesterday_consumption",
         device_class=SensorDeviceClass.ENERGY,
         native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
-        state_class=SensorStateClass.TOTAL,
+        state_class=None,
         suggested_display_precision=3,
         value_fn=lambda data: data.get("yesterday_consumption_kwh"),
         extra_attributes_fn=lambda data: {
@@ -82,7 +82,7 @@ SENSOR_DESCRIPTIONS: tuple[IKBDirektSensorEntityDescription, ...] = (
         translation_key="total_imported_energy",
         device_class=SensorDeviceClass.ENERGY,
         native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
-        state_class=SensorStateClass.TOTAL_INCREASING,
+        state_class=SensorStateClass.TOTAL,
         suggested_display_precision=3,
         value_fn=lambda data: data.get("total_imported_kwh"),
     ),

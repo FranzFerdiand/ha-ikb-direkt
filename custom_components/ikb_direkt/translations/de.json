@@ -16,6 +16,12 @@
         "data": {
           "meter_id": "Zählpunkt / Zähler"
         }
+      },
+      "reauth_confirm": {
+        "title": "IKB Passwort aktualisieren",
+        "data": {
+          "password": "Passwort"
+        }
       }
     },
     "error": {
@@ -25,7 +31,9 @@
       "unknown": "Unerwarteter Fehler aufgetreten."
     },
     "abort": {
-      "already_configured": "Dieser Zählpunkt ist bereits in Home Assistant konfiguriert."
+      "already_configured": "Dieser Zählpunkt ist bereits in Home Assistant konfiguriert.",
+      "reauth_successful": "Anmeldung aktualisiert.",
+      "unknown": "Konfiguration nicht gefunden."
     }
   },
   "options": {
@@ -37,9 +45,14 @@
           "tariff_model": "Tarifmodell (none, fixed, dual_summer_noon)",
           "base_price_year": "Grundpreis (EUR / Jahr)",
           "energy_price": "Arbeitspreis (EUR / kWh)",
-          "offpeak_price": "Sommer-Mittagspreis / Nebentarif (EUR / kWh)"
+          "offpeak_price": "Sommer-Mittagspreis / Nebentarif (EUR / kWh)",
+          "offpeak_start_hour": "Nebentarif ab Stunde (Wien)",
+          "offpeak_end_hour": "Nebentarif bis Stunde (Wien)"
         }
       }
+    },
+    "error": {
+      "invalid_offpeak_window": "Beginn muss vor Ende liegen."
     }
   },
   "entity": {

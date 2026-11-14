@@ -176,7 +176,7 @@ def test_aggregate_readings_to_hourly_statistics() -> None:
 
     stats = aggregate_readings_to_hourly_statistics(readings, last_stat_sum=10.0)
 
-    assert len(stats) == 2
+    assert len(stats) == 1  # Never finalize incomplete hours.
     # Verify top-of-the-hour alignment (StatisticData is a TypedDict/dict)
     s0_start = stats[0]["start"] if isinstance(stats[0], dict) else stats[0].start
     s0_state = stats[0]["state"] if isinstance(stats[0], dict) else stats[0].state
@@ -187,13 +187,6 @@ def test_aggregate_readings_to_hourly_statistics() -> None:
     assert s0_state == 1.0  # 4 * 0.25
     assert s0_sum == 11.0  # 10.0 + 1.0
 
-    s1_start = stats[1]["start"] if isinstance(stats[1], dict) else stats[1].start
-    s1_state = stats[1]["state"] if isinstance(stats[1], dict) else stats[1].state
-    s1_sum = stats[1]["sum"] if isinstance(stats[1], dict) else stats[1].sum
-    assert s1_start.minute == 0
-    assert s1_start.second == 0
-    assert s1_state == 1.0  # 2 * 0.50
-    assert s1_sum == 12.0  # 11.0 + 1.0
 
 
 def test_trailing_zeros_filtered_in_statistics() -> None:

@@ -14,6 +14,8 @@ CONF_TARIFF_MODEL = "tariff_model"
 CONF_BASE_PRICE_YEAR = "base_price_year"
 CONF_ENERGY_PRICE = "energy_price"
 CONF_OFFPEAK_PRICE = "offpeak_price"
+CONF_OFFPEAK_START_HOUR = "offpeak_start_hour"
+CONF_OFFPEAK_END_HOUR = "offpeak_end_hour"
 
 TARIFF_MODEL_NONE = "none"
 TARIFF_MODEL_FIXED = "fixed"
@@ -21,7 +23,7 @@ TARIFF_MODEL_DUAL_SUMMER_NOON = "dual_summer_noon"
 
 # Defaults
 DEFAULT_SCAN_INTERVAL = 3600  # Fetch new data every hour (grid data typically arrives with some delay)
-DEFAULT_HISTORICAL_DAYS = 35  # Initial import of last 35 days of 15-min data (covers contract from ~30.09)
+DEFAULT_HISTORICAL_DAYS = 35  # Rolling correction and initial import window
 
 # Portal URLs
 PORTAL_BASE_URL = "https://direkt.ikb.at"

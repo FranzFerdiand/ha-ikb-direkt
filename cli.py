@@ -200,10 +200,10 @@ def main() -> None:
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     # test-login
-    subparsers.add_parser("test-login", help="Test credentials and login")
+    login_parser = subparsers.add_parser("test-login", help="Test credentials and login")
 
     # meters
-    subparsers.add_parser("meters", help="List discoverable meters")
+    meters_parser = subparsers.add_parser("meters", help="List discoverable meters")
 
     # fetch
     fetch_parser = subparsers.add_parser("fetch", help="Fetch load profile readings")
@@ -219,6 +219,11 @@ def main() -> None:
     fetch_parser.add_argument("--meter", "-m", help="Counting point or meter number substring filter")
     fetch_parser.add_argument("--output", "-o", help="File path to save CSV or JSON")
     fetch_parser.add_argument("--format", "-f", choices=["csv", "json"], default="csv", help="Output format")
+
+    # Accept credentials before or after the command, as documented.
+    for command_parser in (login_parser, meters_parser, fetch_parser):
+        command_parser.add_argument("--username", "-u", default=argparse.SUPPRESS)
+        command_parser.add_argument("--password", "-p", default=argparse.SUPPRESS)
 
     args = parser.parse_args()
 

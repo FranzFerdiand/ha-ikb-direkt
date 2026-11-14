@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, timezone
 import json
 import logging
-import re
+import math
 from typing import Any
 import urllib.parse
 
@@ -84,6 +84,8 @@ class MeterPoint:
             if len(sub) > 1:
                 reading_type = sub[1].strip()
 
+        if not isinstance(data, dict):
+            raise IKBDataError("Invalid meter definition")
         period_start = data.get("PeriodBDate", "")
         period_end = data.get("PeriodEDate", "")
 
@@ -137,9 +139,11 @@ class IKBDirektClient:
     async def _get_session(self) -> aiohttp.ClientSession:
         """Return existing or create new aiohttp session."""
         if self._session is None or self._session.closed:
+            self._external_session = False
             self._session = aiohttp.ClientSession(
                 headers={"User-Agent": USER_AGENT},
-                cookie_jar=aiohttp.CookieJar(unsafe=True),
+                cookie_jar=aiohttp.CookieJar(),
+                timeout=aiohttp.ClientTimeout(total=60),
             )
         return self._session
 
@@ -150,6 +154,7 @@ class IKBDirektClient:
 
     async def login(self) -> bool:
         """Authenticate via direkt.ikb.at and Keycloak SSO."""
+        self._is_logged_in = False
         session = await self._get_session()
 
         try:
@@ -163,7 +168,7 @@ class IKBDirektClient:
                 html = await resp.text()
 
             # Check if session is already authenticated (e.g. from existing cookie jar)
-            if "page=logout" in html or "id=\"metCodes\"" in html or "page=loadprofile" in html:
+            if "page=logout" in html or "id=\"metCodes\"" in html:
                 _LOGGER.info("Already logged in to IKB Direkt via existing session")
                 soup = BeautifulSoup(html, "html.parser")
                 csrf_meta = soup.find("meta", {"name": "csrf-token"})
@@ -218,12 +223,15 @@ class IKBDirektClient:
                 raise IKBDataError("No SSO redirect URL returned by IKB portal")
 
             # 3. Fetch Keycloak login form
-            _LOGGER.debug("Fetching SSO auth page: %s", redirect_url)
+            self._validate_auth_url(redirect_url)
+            _LOGGER.debug("Fetching SSO auth page")
             async with session.get(redirect_url) as resp:
                 if resp.status != 200:
                     raise IKBConnectionError(
                         f"Failed to load SSO page (status {resp.status})"
                     )
+                self._validate_auth_url(str(resp.url))
+                sso_page_url = str(resp.url)
                 sso_html = await resp.text()
 
             sso_soup = BeautifulSoup(sso_html, "html.parser")
@@ -231,31 +239,40 @@ class IKBDirektClient:
             if not form or not form.get("action"):
                 raise IKBDataError("SSO login form not found")
 
-            sso_action_url = form["action"]
+            sso_action_url = urllib.parse.urljoin(sso_page_url, form["action"])
+            self._validate_auth_url(sso_action_url)
 
-            # Collect form fields
-            post_data: dict[str, Any] = {
-                "username": self._username,
-                "password": self._password,
-                "login": "Anmelden",
+            post_data = {
+                field["name"]: field.get("value", "")
+                for field in form.find_all("input", {"type": "hidden"})
+                if field.get("name")
             }
-            for hidden_input in form.find_all("input", {"type": "hidden"}):
-                name = hidden_input.get("name")
-                if name:
-                    post_data[name] = hidden_input.get("value", "")
+            post_data.update(username=self._username, password=self._password, login="Anmelden")
 
-            # 4. Submit credentials to Keycloak
-            _LOGGER.debug("Submitting credentials to SSO")
-            async with session.post(
-                sso_action_url,
-                data=post_data,
-                allow_redirects=True,
-            ) as resp:
+            # Do not let 307/308 redirects forward credentials to another origin.
+            async with session.post(sso_action_url, data=post_data, allow_redirects=False) as resp:
+                status = resp.status
                 final_url = str(resp.url)
                 body = await resp.text()
+                redirect = resp.headers.get("Location")
+            for _ in range(10):
+                if status not in (301, 302, 303, 307, 308):
+                    break
+                if not redirect or status in (307, 308):
+                    raise IKBAuthenticationError("Unexpected redirect during credential submission")
+                final_url = urllib.parse.urljoin(final_url, redirect)
+                self._validate_auth_url(final_url)
+                async with session.get(final_url, allow_redirects=False) as resp:
+                    status = resp.status
+                    body = await resp.text()
+                    redirect = resp.headers.get("Location")
+            if status != 200:
+                raise IKBConnectionError(f"Login completion failed (status {status})")
 
             # Check if login was successful
-            if "sso.ikb.at" in final_url:
+            if urllib.parse.urlsplit(final_url).hostname != "direkt.ikb.at" or not (
+                "page=logout" in body or 'id="metCodes"' in body
+            ):
                 # Still on SSO page -> login failure
                 err_soup = BeautifulSoup(body, "html.parser")
                 err_msg = "Invalid username or password"
@@ -264,6 +281,10 @@ class IKBDirektClient:
                     err_msg = feedback.text.strip()
                 raise IKBAuthenticationError(f"IKB login failed: {err_msg}")
 
+            final_soup = BeautifulSoup(body, "html.parser")
+            csrf = final_soup.find("meta", {"name": "csrf-token"})
+            if csrf and csrf.get("content"):
+                self._csrf_token = csrf["content"]
             _LOGGER.info("IKB Direkt login successful")
             self._is_logged_in = True
             return True
@@ -271,33 +292,69 @@ class IKBDirektClient:
         except (aiohttp.ClientError, asyncio.TimeoutError) as err:
             raise IKBConnectionError(f"Network error during IKB login: {err}") from err
 
+    @staticmethod
+    def _validate_auth_url(url: str) -> None:
+        parsed = urllib.parse.urlsplit(url)
+        if (parsed.scheme != "https" or parsed.hostname not in {"sso.ikb.at", "direkt.ikb.at"}
+                or parsed.username or parsed.password or parsed.port not in (None, 443)):
+            raise IKBAuthenticationError("Untrusted authentication destination")
+
+    async def _request_json(self, url: str, *, visit_profile: bool = False) -> Any:
+        """Retry an expired portal session once, without hiding malformed responses."""
+        for attempt in range(2):
+            if not self._is_logged_in:
+                await self.login()
+            session = await self._get_session()
+            try:
+                if visit_profile:
+                    async with session.get(PORTAL_LOADPROFILE_PAGE_URL) as resp:
+                        if resp.status in (401, 403):
+                            raise IKBAuthenticationError("Portal session expired")
+                        if resp.status != 200:
+                            raise IKBConnectionError(f"Loadprofile page failed (status {resp.status})")
+                headers = {"X-Requested-With": "XMLHttpRequest", "X-CSRF-Token": self._csrf_token or ""}
+                async with session.get(url, headers=headers) as resp:
+                    if resp.status in (401, 403):
+                        raise IKBAuthenticationError("Portal session expired")
+                    if resp.status != 200:
+                        raise IKBConnectionError(f"Portal request failed (status {resp.status})")
+                    try:
+                        data = await resp.json(content_type=None)
+                    except (ValueError, aiohttp.ContentTypeError) as err:
+                        body = await resp.text()
+                        if "kc-form-login" in body or "page=login" in body or 'type="password"' in body:
+                            raise IKBAuthenticationError("Portal returned login page") from err
+                        raise IKBDataError("Invalid JSON from IKB portal") from err
+                content = data.get("content", "") if isinstance(data, dict) else ""
+                if isinstance(content, str) and any(marker in content for marker in (
+                    "kc-form-login", "page=login", 'type="password"', "type='password'"
+                )):
+                    raise IKBAuthenticationError("Portal returned login form")
+                if isinstance(data, dict) and (
+                    data.get("redirect") or data.get("status") in (401, 403)
+                    or data.get("error") in ("unauthorized", "Unauthenticated", "invalid_csrf", "session_expired")
+                ):
+                    raise IKBAuthenticationError("Portal session expired")
+                return data
+            except IKBAuthenticationError:
+                self._is_logged_in = False
+                self._csrf_token = None
+                session.cookie_jar.clear()
+                if attempt:
+                    raise
+            except (aiohttp.ClientError, asyncio.TimeoutError) as err:
+                raise IKBConnectionError(f"Network error contacting IKB: {err}") from err
+        raise IKBAuthenticationError("Portal session expired")
+
     async def get_meters(self) -> list[MeterPoint]:
         """Discover available meters and counting points."""
-        if not self._is_logged_in:
-            await self.login()
-
-        session = await self._get_session()
         try:
-            # First, visit the loadprofile page to set up the server session context
-            _LOGGER.debug("Visiting loadprofile page")
-            async with session.get(PORTAL_LOADPROFILE_PAGE_URL) as resp:
-                if resp.status != 200:
-                    raise IKBConnectionError("Failed to visit loadprofile page")
-
-            # Then fetch loadprofile content via AJAX
-            _LOGGER.debug("Fetching loadprofile content via AJAX")
-            headers = {
-                "X-Requested-With": "XMLHttpRequest",
-                "X-CSRF-Token": self._csrf_token or "",
-            }
-            async with session.get(PORTAL_LOADPROFILE_AJAX_URL, headers=headers) as resp:
-                if resp.status != 200:
-                    raise IKBConnectionError(
-                        f"Failed to fetch loadprofile data (status {resp.status})"
-                    )
-                data = await resp.json(content_type=None)
-
+            data = await self._request_json(PORTAL_LOADPROFILE_AJAX_URL, visit_profile=True)
+            if not isinstance(data, dict) or "content" not in data:
+                raise IKBDataError("Invalid meter response from IKB portal")
             content = data.get("content", "")
+            if not isinstance(content, str):
+                raise IKBDataError("Invalid meter content from IKB portal")
             soup = BeautifulSoup(content, "html.parser")
             met_select = soup.find("select", id="metCodes")
             if not met_select:
@@ -341,8 +398,6 @@ class IKBDirektClient:
 
         meters: list[MeterPoint] = [meter] if isinstance(meter, MeterPoint) else list(meter)
 
-        session = await self._get_session()
-
         # Build periods parameter, expanding PeriodEDate / PeriodBDate so portal backend
         # does not truncate queries across monthly period boundaries.
         period_objs: list[dict[str, Any]] = []
@@ -374,11 +429,6 @@ class IKBDirektClient:
             "periods": periods_param,
         }
         url = f"{PORTAL_DATA_SERVICE_URL}?{urllib.parse.urlencode(params)}"
-        headers = {
-            "X-Requested-With": "XMLHttpRequest",
-            "X-CSRF-Token": self._csrf_token or "",
-        }
-
         _LOGGER.debug(
             "Requesting load profile: %s to %s (resolution: %s, periods: %s)",
             s_str,
@@ -387,39 +437,29 @@ class IKBDirektClient:
             periods_param,
         )
         try:
-            async with session.get(url, headers=headers) as resp:
-                if resp.status != 200:
-                    raise IKBConnectionError(
-                        f"Failed to fetch load profile (status {resp.status})"
-                    )
-                raw_json = await resp.json(content_type=None)
+            raw_json = await self._request_json(url)
+            if not isinstance(raw_json, list):
+                raise IKBDataError("Invalid load profile response from IKB portal")
 
-            if not isinstance(raw_json, list) or len(raw_json) == 0:
-                _LOGGER.debug("Empty load profile response from portal")
-                return []
-
-            readings: list[Reading] = []
-            seen_timestamps: set[int] = set()
-
+            by_timestamp: dict[int, Reading] = {}
             for series in raw_json:
                 if not isinstance(series, dict):
-                    continue
-                raw_data = series.get("data", [])
-                for item in raw_data:
-                    # item format: [end_ts, kwh, start_ts, end_ts]
-                    if isinstance(item, list) and len(item) >= 3:
-                        end_ts = int(item[0])
-                        val = float(item[1]) if item[1] is not None else 0.0
-                        start_ts = int(item[2])
-                        if start_ts not in seen_timestamps:
-                            seen_timestamps.add(start_ts)
-                            readings.append(
-                                Reading(
-                                    start_timestamp=start_ts,
-                                    end_timestamp=end_ts,
-                                    kwh=val,
-                                )
-                            )
+                    raise IKBDataError("Invalid load profile series")
+                for item in series.get("data", []):
+                    if not isinstance(item, list) or len(item) < 3:
+                        raise IKBDataError("Invalid load profile interval")
+                    if item[1] is None:
+                        continue  # Missing is not measured zero.
+                    try:
+                        end_ts, val, start_ts = int(item[0]), float(item[1]), int(item[2])
+                    except (ValueError, TypeError, OverflowError) as err:
+                        raise IKBDataError("Invalid load profile value") from err
+                    if not math.isfinite(val) or end_ts <= start_ts:
+                        raise IKBDataError("Invalid load profile value")
+                    previous = by_timestamp.get(start_ts)
+                    if previous is None or (previous.kwh == 0 and val != 0):
+                        by_timestamp[start_ts] = Reading(start_ts, end_ts, val)
+            readings = list(by_timestamp.values())
 
             # Sort by start_timestamp
             readings.sort(key=lambda r: r.start_timestamp)

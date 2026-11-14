@@ -8,7 +8,6 @@ from typing import Any
 from homeassistant import config_entries
 from homeassistant.core import callback
 from homeassistant.data_entry_flow import FlowResult
-from homeassistant.helpers.aiohttp_client import async_get_clientsession
 import voluptuous as vol
 
 from .api import (
@@ -53,6 +52,8 @@ class IKBDirektConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         self._username: str | None = None
         self._password: str | None = None
         self._meters: list[MeterPoint] = []
+        self._historical_days = DEFAULT_HISTORICAL_DAYS
+        self._reauth_entry = None
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
@@ -64,12 +65,13 @@ class IKBDirektConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             self._username = user_input[CONF_USERNAME]
             self._password = user_input[CONF_PASSWORD]
 
-            session = async_get_clientsession(self.hass)
-            client = IKBDirektClient(self._username, self._password, session=session)
+            self._historical_days = user_input.get(CONF_HISTORICAL_DAYS, DEFAULT_HISTORICAL_DAYS)
+            client = IKBDirektClient(self._username, self._password)
 
             try:
                 await client.login()
                 meters = await client.get_meters()
+                meters = list({(m.counting_point, m.reading_type): m for m in meters}.values())
             except IKBAuthenticationError:
                 errors["base"] = "invalid_auth"
             except IKBConnectionError:
@@ -81,32 +83,12 @@ class IKBDirektConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 if not meters:
                     errors["base"] = "no_meters"
                 elif len(meters) == 1:
-                    # Single meter found -> automatically set up
-                    meter = meters[0]
-                    await self.async_set_unique_id(
-                        f"{self._username}_{meter.counting_point}_{meter.reading_type}"
-                    )
-                    self._abort_if_unique_id_configured()
-
-                    return self.async_create_entry(
-                        title=f"IKB {meter.meter_number} ({meter.reading_type})",
-                        data={
-                            CONF_USERNAME: self._username,
-                            CONF_PASSWORD: self._password,
-                            CONF_METER_ID: meter.counting_point,
-                            "meter_raw_json": meter.raw_json,
-                            "meter_number": meter.meter_number,
-                            "reading_type": meter.reading_type,
-                            "display_name": meter.display_name,
-                            CONF_HISTORICAL_DAYS: user_input.get(
-                                CONF_HISTORICAL_DAYS, DEFAULT_HISTORICAL_DAYS
-                            ),
-                        },
-                    )
+                    return await self._create_meter_entry(meters[0])
                 else:
-                    # Multiple meters found -> proceed to meter selection step
                     self._meters = meters
                     return await self.async_step_meter()
+            finally:
+                await client.close()
 
         schema = vol.Schema(
             {
@@ -126,32 +108,14 @@ class IKBDirektConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         """Handle selecting a specific meter if multiple are present."""
         errors: dict[str, str] = {}
 
+        meter_map = {f"{m.counting_point}|{m.reading_type}": m for m in self._meters}
         if user_input is not None:
-            selected_cp = user_input[CONF_METER_ID]
-            meter = next(
-                (m for m in self._meters if m.counting_point == selected_cp), None
-            )
+            meter = meter_map.get(user_input[CONF_METER_ID])
             if meter:
-                await self.async_set_unique_id(
-                    f"{self._username}_{meter.counting_point}_{meter.reading_type}"
-                )
-                self._abort_if_unique_id_configured()
+                return await self._create_meter_entry(meter)
+            errors["base"] = "no_meters"
 
-                return self.async_create_entry(
-                    title=f"IKB {meter.meter_number} ({meter.reading_type})",
-                    data={
-                        CONF_USERNAME: self._username,
-                        CONF_PASSWORD: self._password,
-                        CONF_METER_ID: meter.counting_point,
-                        "meter_raw_json": meter.raw_json,
-                        "meter_number": meter.meter_number,
-                        "reading_type": meter.reading_type,
-                        "display_name": meter.display_name,
-                        CONF_HISTORICAL_DAYS: DEFAULT_HISTORICAL_DAYS,
-                    },
-                )
-
-        meter_options = {m.counting_point: m.display_name for m in self._meters}
+        meter_options = {key: m.display_name for key, m in meter_map.items()}
         schema = vol.Schema(
             {
                 vol.Required(CONF_METER_ID): vol.In(meter_options),
@@ -159,6 +123,62 @@ class IKBDirektConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         )
 
         return self.async_show_form(step_id="meter", data_schema=schema, errors=errors)
+
+    async def _create_meter_entry(self, meter: MeterPoint) -> FlowResult:
+        await self.async_set_unique_id(
+            f"{self._username}_{meter.counting_point}_{meter.reading_type}"
+        )
+        self._abort_if_unique_id_configured()
+        return self.async_create_entry(
+            title=f"IKB {meter.meter_number} ({meter.reading_type})",
+            data={
+                CONF_USERNAME: self._username,
+                CONF_PASSWORD: self._password,
+                CONF_METER_ID: meter.counting_point,
+                "meter_raw_json": meter.raw_json,
+                "meter_number": meter.meter_number,
+                "reading_type": meter.reading_type,
+                "display_name": meter.display_name,
+                CONF_HISTORICAL_DAYS: self._historical_days,
+            },
+        )
+
+    async def async_step_reauth(self, entry_data: dict[str, Any]) -> FlowResult:
+        """Replace credentials after the portal rejects the stored password."""
+        self._reauth_entry = self.hass.config_entries.async_get_entry(self.context["entry_id"])
+        return await self.async_step_reauth_confirm()
+
+    async def async_step_reauth_confirm(self, user_input: dict[str, Any] | None = None) -> FlowResult:
+        errors = {}
+        entry = self._reauth_entry
+        if entry is None:
+            return self.async_abort(reason="unknown")
+        if user_input is not None:
+            client = IKBDirektClient(entry.data[CONF_USERNAME], user_input[CONF_PASSWORD])
+            try:
+                meters = await client.get_meters()
+                if not any(m.counting_point == entry.data[CONF_METER_ID]
+                           and m.reading_type == entry.data.get("reading_type", "Verbrauch")
+                           for m in meters):
+                    errors["base"] = "no_meters"
+                else:
+                    self.hass.config_entries.async_update_entry(
+                        entry, data={**entry.data, CONF_PASSWORD: user_input[CONF_PASSWORD]}
+                    )
+                    await self.hass.config_entries.async_reload(entry.entry_id)
+                    return self.async_abort(reason="reauth_successful")
+            except IKBAuthenticationError:
+                errors["base"] = "invalid_auth"
+            except IKBConnectionError:
+                errors["base"] = "cannot_connect"
+            except IKBDirektError:
+                errors["base"] = "unknown"
+            finally:
+                await client.close()
+        return self.async_show_form(
+            step_id="reauth_confirm",
+            data_schema=vol.Schema({vol.Required(CONF_PASSWORD): str}), errors=errors,
+        )
 
     @staticmethod
     @callback
@@ -185,8 +205,12 @@ class IKBDirektOptionsFlow(config_entries.OptionsFlow):
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
         """Manage options."""
+        errors = {}
         if user_input is not None:
-            return self.async_create_entry(title="", data=user_input)
+            if user_input.get("offpeak_start_hour", 10) >= user_input.get("offpeak_end_hour", 16):
+                errors["base"] = "invalid_offpeak_window"
+            else:
+                return self.async_create_entry(title="", data=user_input)
 
         current_days = self.config_entry.options.get(
             CONF_HISTORICAL_DAYS,
@@ -217,8 +241,8 @@ class IKBDirektOptionsFlow(config_entries.OptionsFlow):
                 vol.Optional(CONF_TARIFF_MODEL, default=current_model): vol.In(
                     TARIFF_MODELS
                 ),
-                vol.Optional(CONF_BASE_PRICE_YEAR, default=float(current_base)): vol.Coerce(
-                    float
+                vol.Optional(CONF_BASE_PRICE_YEAR, default=float(current_base)): vol.All(
+                    vol.Coerce(float), vol.Range(min=0)
                 ),
                 vol.Optional(CONF_ENERGY_PRICE, default=float(current_energy)): vol.Coerce(
                     float
@@ -226,7 +250,11 @@ class IKBDirektOptionsFlow(config_entries.OptionsFlow):
                 vol.Optional(
                     CONF_OFFPEAK_PRICE, default=float(current_offpeak)
                 ): vol.Coerce(float),
+                vol.Optional("offpeak_start_hour", default=self.config_entry.options.get("offpeak_start_hour", 10)):
+                    vol.All(vol.Coerce(int), vol.Range(min=0, max=23)),
+                vol.Optional("offpeak_end_hour", default=self.config_entry.options.get("offpeak_end_hour", 16)):
+                    vol.All(vol.Coerce(int), vol.Range(min=1, max=24)),
             }
         )
 
-        return self.async_show_form(step_id="init", data_schema=schema)
+        return self.async_show_form(step_id="init", data_schema=schema, errors=errors)

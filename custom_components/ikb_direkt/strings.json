@@ -16,6 +16,12 @@
         "data": {
           "meter_id": "Smart Meter"
         }
+      },
+      "reauth_confirm": {
+        "title": "Update IKB password",
+        "data": {
+          "password": "Password"
+        }
       }
     },
     "error": {
@@ -25,7 +31,9 @@
       "unknown": "An unexpected error occurred."
     },
     "abort": {
-      "already_configured": "This smart meter is already configured."
+      "already_configured": "This smart meter is already configured.",
+      "reauth_successful": "Authentication updated.",
+      "unknown": "Configuration not found."
     }
   },
   "options": {
@@ -37,9 +45,14 @@
           "tariff_model": "Tariff Model (none, fixed, dual_summer_noon)",
           "base_price_year": "Base price (EUR / year)",
           "energy_price": "Working price (EUR / kWh)",
-          "offpeak_price": "Summer noon / off-peak price (EUR / kWh)"
+          "offpeak_price": "Summer noon / off-peak price (EUR / kWh)",
+          "offpeak_start_hour": "Off-peak start hour (Vienna)",
+          "offpeak_end_hour": "Off-peak end hour (Vienna)"
         }
       }
+    },
+    "error": {
+      "invalid_offpeak_window": "Start must be before end."
     }
   },
   "entity": {
